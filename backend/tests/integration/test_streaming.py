@@ -39,6 +39,12 @@ async def app(integration_settings: Settings) -> AsyncIterator[FastAPI]:
             "default_provider": "mock",
             "log_level": "WARNING",
             "event_bus_backend": EventBusBackend.MEMORY,
+            # Pinned so a local `.env` cannot change which provider serves.
+            "anthropic_api_key": None,
+            "openai_api_key": None,
+            "groq_api_key": None,
+            "gemini_api_key": None,
+            "ollama_enabled": False,
         }
     )
     application = create_app(settings)

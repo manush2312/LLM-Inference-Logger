@@ -64,7 +64,11 @@ async def api_client(integration_settings: Settings) -> AsyncIterator[_ApiClient
     get_settings.cache_clear()
     app = create_app(
         integration_settings.model_copy(
-            update={"log_level": "WARNING", "event_bus_backend": EventBusBackend.MEMORY}
+            update={
+                "log_level": "WARNING",
+                "event_bus_backend": EventBusBackend.MEMORY,
+                "ollama_enabled": False,
+            }
         )
     )
     async with LifespanManager(app):

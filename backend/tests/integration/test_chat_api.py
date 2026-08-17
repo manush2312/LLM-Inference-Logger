@@ -25,8 +25,21 @@ pytestmark = pytest.mark.integration
 @pytest.fixture
 def api_settings(integration_settings: Settings) -> Settings:
     """Real Postgres, mock provider, instant responses."""
+    # Provider set pinned, not inherited. These tests assert on which
+    # providers are configured, so a local `.env` enabling one would break them
+    # on the developer's machine while passing in CI -- the worst shape for a
+    # failure. Integration settings must reach Postgres, so the env file cannot
+    # simply be switched off the way it is for unit tests.
     return integration_settings.model_copy(
-        update={"default_provider": "mock", "log_level": "WARNING"}
+        update={
+            "default_provider": "mock",
+            "log_level": "WARNING",
+            "anthropic_api_key": None,
+            "openai_api_key": None,
+            "groq_api_key": None,
+            "gemini_api_key": None,
+            "ollama_enabled": False,
+        }
     )
 
 
