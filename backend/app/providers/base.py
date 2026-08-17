@@ -139,6 +139,23 @@ class BaseProvider(ABC):
         """
         return True
 
+    def max_output_tokens_cap(self) -> int | None:
+        """A hard ceiling this provider imposes, if any.
+
+        Distinct from the request's `max_output_tokens`, which is what the
+        *caller* wants. This is what the provider will actually accept, and the
+        two genuinely differ: Groq's free tier counts `max_completion_tokens`
+        against an 8000 tokens-per-minute budget, so a 16,000-token request is
+        rejected with a 413 before generating anything. A single global value
+        that is right for a paid Anthropic tier is fatal there.
+        """
+        return None
+
+    def clamp_output_tokens(self, requested: int) -> int:
+        """Reduce a requested budget to what this provider can accept."""
+        cap = self.max_output_tokens_cap()
+        return min(requested, cap) if cap is not None else requested
+
     def is_configured(self) -> bool:
         """Whether this provider has what it needs to serve traffic.
 

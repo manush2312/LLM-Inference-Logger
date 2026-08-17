@@ -91,7 +91,9 @@ class ChatService:
         request = ChatRequest(
             messages=[ChatMessage(role=m.role, content=m.content) for m in history],
             model=model_name,
-            max_output_tokens=self._settings.max_output_tokens,
+            # Clamped per provider: the configured budget is what we want, the
+            # provider's cap is what it will accept.
+            max_output_tokens=adapter.clamp_output_tokens(self._settings.max_output_tokens),
         )
 
         # Substituted for the raw adapter: the service calls the same
@@ -283,7 +285,7 @@ class StreamingChatService(ChatService):
         request = ChatRequest(
             messages=[ChatMessage(role=m.role, content=m.content) for m in history],
             model=model_name,
-            max_output_tokens=self._settings.max_output_tokens,
+            max_output_tokens=adapter.clamp_output_tokens(self._settings.max_output_tokens),
         )
         instrumented = InstrumentedProvider(
             adapter,

@@ -33,8 +33,8 @@ x-app-env: &app-env
   REDACTION_ENABLED: ${REDACTION_ENABLED:-true}
   GROQ_API_KEY: ${GROQ_API_KEY:-}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-  DEFAULT_GROQ_MODEL: ${DEFAULT_GROQ_MODEL:-llama-3.3-70b-versatile}
-  DEFAULT_GEMINI_MODEL: ${DEFAULT_GEMINI_MODEL:-gemini-2.0-flash}
+  DEFAULT_GROQ_MODEL: ${DEFAULT_GROQ_MODEL:-openai/gpt-oss-20b}
+  DEFAULT_GEMINI_MODEL: ${DEFAULT_GEMINI_MODEL:-gemini-flash-latest}
   OLLAMA_ENABLED: ${OLLAMA_ENABLED:-false}
   DEFAULT_OLLAMA_MODEL: ${DEFAULT_OLLAMA_MODEL:-llama3.2}
   # Not `localhost` -- inside a container that is the container itself. Ollama

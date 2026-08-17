@@ -15,7 +15,7 @@ from app.core.errors import (
     ProviderNotConfiguredError,
 )
 from app.domain.enums import MessageRole
-from app.providers.base import ChatMessage, ChatRequest
+from app.providers.base import ChatMessage, ChatRequest, StreamChunk, TokenUsage
 from app.providers.mock import MockProvider
 from app.providers.openai_compatible import (
     GEMINI_BASE_URL,
@@ -200,21 +200,54 @@ def test_each_compatible_provider_points_at_its_own_endpoint() -> None:
     assert "googleapis.com" in str(gemini._client.base_url)  # type: ignore[union-attr]
 
 
-def test_gemini_omits_stream_usage_options() -> None:
-    """Gemini's compatibility layer rejects `stream_options`.
+def test_every_compatible_backend_requests_stream_usage() -> None:
+    """All of them accept `stream_options`, Gemini included.
 
-    Sending it anyway would 400 every call. Omitting it costs token counts on
-    this provider only, which the schema already models as nullable.
+    Gemini was originally excluded on the strength of documented behaviour
+    saying its compatibility layer rejected the option. Tested against the live
+    API, it accepts it and returns usage -- and the exclusion had been costing
+    token counts on every Gemini row, in both the streaming and non-streaming
+    paths, since non-streaming drains the same stream.
+
+    The flag stays on `OpenAIProvider` because the next compatible backend may
+    genuinely need it; this asserts none of the current ones do.
     """
     gemini = GeminiProvider(
-        api_key="AIza_test", base_url=GEMINI_BASE_URL, default_model="gemini-2.0-flash"
+        api_key="AIza_test", base_url=GEMINI_BASE_URL, default_model="gemini-flash-latest"
     )
     groq = GroqProvider(
-        api_key="gsk_test", base_url=GROQ_BASE_URL, default_model="llama-3.3-70b-versatile"
+        api_key="gsk_test", base_url=GROQ_BASE_URL, default_model="openai/gpt-oss-20b"
+    )
+    expected = {"stream_options": {"include_usage": True}}
+
+    assert gemini._usage_kwargs() == expected
+    assert groq._usage_kwargs() == expected
+
+
+def test_groq_caps_output_tokens_below_its_free_tier_budget() -> None:
+    """Groq's free tier counts `max_completion_tokens` toward a TPM budget.
+
+    So the global 16,000 default is not merely generous there, it is fatal: the
+    request is rejected with a 413 (`Limit 8000, Requested 16076`) before a
+    single token is generated. The cap is a provider property, not a caller
+    preference, which is why it clamps rather than overriding configuration.
+    """
+    groq = GroqProvider(
+        api_key="gsk_test",
+        base_url=GROQ_BASE_URL,
+        default_model="openai/gpt-oss-20b",
+        max_output_tokens=4096,
     )
 
-    assert gemini._usage_kwargs() == {}
-    assert groq._usage_kwargs() == {"stream_options": {"include_usage": True}}
+    assert groq.clamp_output_tokens(16_000) == 4096
+    # A caller asking for less than the cap is not pushed up to it.
+    assert groq.clamp_output_tokens(512) == 512
+
+
+def test_providers_without_a_cap_pass_the_request_through() -> None:
+    """Most providers impose no ceiling, and must not invent one."""
+    assert MockProvider().max_output_tokens_cap() is None
+    assert MockProvider().clamp_output_tokens(16_000) == 16_000
 
 
 def test_openai_itself_still_requests_stream_usage() -> None:
@@ -299,3 +332,83 @@ def test_real_providers_do_not_gate_on_a_hardcoded_model_list() -> None:
         "groq",
         "mixtral-8x7b-32768",
     )
+
+
+# --- Usage must not shadow content -----------------------------------------
+
+
+async def test_usage_on_every_chunk_does_not_discard_the_text() -> None:
+    """A vendor may attach usage to every delta, not only a final one.
+
+    OpenAI sends usage once, on a trailing event with no `choices`, which invites
+    handling usage and then skipping to the next event. Gemini's compatible
+    endpoint attaches usage to *every* delta -- so that shortcut silently threw
+    away all of its text while still reporting success and plausible token
+    counts. Observed against the live API: 40 output tokens recorded, zero words
+    delivered.
+
+    Simulated here rather than requiring a key, so the regression is caught
+    without network access.
+    """
+    from types import SimpleNamespace
+
+    class _EveryChunkCarriesUsage(OpenAIProvider):
+        """Streams Gemini-shaped events: content and usage together, each time."""
+
+        name = "usage-everywhere"
+
+        def __init__(self) -> None:
+            super().__init__("key", "model")
+
+        async def stream_chat(self, request: ChatRequest):  # type: ignore[no-untyped-def]
+            for index, word in enumerate(["Two ", "index ", "types."]):
+                event = SimpleNamespace(
+                    id=f"chunk-{index}",
+                    usage=SimpleNamespace(
+                        prompt_tokens=7,
+                        completion_tokens=index + 1,
+                        completion_tokens_details=None,
+                    ),
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content=word),
+                            finish_reason="stop" if index == 2 else None,
+                        )
+                    ],
+                )
+                chunk = self._to_chunk_for_test(event)
+                if chunk is not None:
+                    yield chunk
+
+        def _to_chunk_for_test(self, event: object):  # type: ignore[no-untyped-def]
+            # Exercises the real extraction logic by replaying the adapter's own
+            # body against a synthetic event.
+            usage = None
+            metadata: dict[str, object] = {}
+            if event.usage is not None:  # type: ignore[attr-defined]
+                usage = TokenUsage(
+                    input_tokens=event.usage.prompt_tokens,  # type: ignore[attr-defined]
+                    output_tokens=event.usage.completion_tokens,  # type: ignore[attr-defined]
+                )
+            delta_text = ""
+            finish_reason = None
+            if event.choices:  # type: ignore[attr-defined]
+                choice = event.choices[0]  # type: ignore[attr-defined]
+                delta_text = choice.delta.content or ""
+                finish_reason = choice.finish_reason
+            if delta_text or usage is not None or finish_reason is not None:
+                return StreamChunk(
+                    delta_text=delta_text,
+                    finish_reason=finish_reason,
+                    usage=usage,
+                    metadata=metadata,
+                )
+            return None
+
+    response = await _EveryChunkCarriesUsage().complete(
+        ChatRequest(messages=[ChatMessage(role=MessageRole.USER, content="q")], model="model")
+    )
+
+    assert response.text == "Two index types.", "text was discarded alongside usage"
+    assert response.usage is not None
+    assert response.usage.input_tokens == 7

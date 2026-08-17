@@ -41,19 +41,34 @@ OLLAMA_BASE_URL: Final = "http://localhost:11434/v1"
 class OpenAICompatibleProvider(OpenAIProvider):
     """An OpenAI-shaped API hosted somewhere other than OpenAI."""
 
-    def __init__(self, *, api_key: str | None, base_url: str, default_model: str) -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str | None,
+        base_url: str,
+        default_model: str,
+        max_output_tokens: int | None = None,
+    ) -> None:
         # Deliberately not calling super().__init__: it builds a client pointed
         # at OpenAI. Everything else about the parent is reused as-is.
         self._default_model = default_model
+        self._max_output_tokens = max_output_tokens
         self._client = AsyncOpenAI(api_key=api_key, base_url=base_url) if api_key else None
+
+    def max_output_tokens_cap(self) -> int | None:
+        return self._max_output_tokens
 
 
 class GroqProvider(OpenAICompatibleProvider):
     """Groq. Free tier, no card required, and very fast.
 
-    Runs open models (Llama, Mixtral) on custom silicon. Streaming usage
-    reporting is supported, so token accounting works exactly as it does
-    against OpenAI.
+    Runs open models on custom silicon. Streaming usage reporting is supported,
+    so token accounting works exactly as it does against OpenAI.
+
+    Its free tier counts `max_completion_tokens` toward a tokens-per-minute
+    budget, so it needs an output cap well below the global default -- see
+    `max_output_tokens_cap`. Observed as a 413 `rate_limit_exceeded`:
+    "Limit 8000, Requested 16076".
     """
 
     name: ClassVar[str] = "groq"
@@ -71,11 +86,12 @@ class GeminiProvider(OpenAICompatibleProvider):
 
     name: ClassVar[str] = "gemini"
 
-    # Gemini's compatibility layer has historically rejected `stream_options`.
-    # Requesting it anyway risks a hard 400 on every call; omitting it costs
-    # token counts on this provider only, which the schema already models as
-    # nullable. A loud failure would be worse than a known-null column.
-    requests_stream_usage: ClassVar[bool] = False
+    # No `requests_stream_usage` override. It was set to False here on the
+    # strength of documented behaviour saying the compatibility layer rejected
+    # `stream_options` -- then tested against the live API, which accepts it and
+    # returns usage. Leaving the override in place cost token counts on every
+    # Gemini row, in both the streaming and non-streaming paths (non-streaming
+    # drains the same stream), for no reason at all.
 
 
 class OllamaProvider(OpenAICompatibleProvider):

@@ -45,6 +45,7 @@ class ProviderRegistry:
                 api_key=settings.groq_api_key,
                 base_url=settings.groq_base_url,
                 default_model=settings.default_groq_model,
+                max_output_tokens=settings.groq_max_output_tokens,
             ),
             GeminiProvider(
                 api_key=settings.gemini_api_key,

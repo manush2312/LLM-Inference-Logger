@@ -62,30 +62,44 @@ class OpenAIProvider(BaseProvider):
             )
 
             async for event in stream:
-                # The final usage-bearing event carries an empty `choices`
-                # list, so this must not assume a choice is present.
+                # Usage and content are read from the *same* event, never
+                # treated as mutually exclusive.
+                #
+                # OpenAI sends usage once, on a final event with an empty
+                # `choices` list -- which invites the shortcut of handling usage
+                # and then skipping to the next event. Gemini's compatible
+                # endpoint attaches usage to *every* delta, so that shortcut
+                # silently discarded all of its text while still reporting
+                # success and plausible token counts. Observed: 40 output tokens
+                # recorded, zero words delivered.
+                usage: TokenUsage | None = None
+                metadata: dict[str, Any] = {}
                 if event.usage is not None:
-                    yield StreamChunk(
-                        usage=TokenUsage(
-                            input_tokens=event.usage.prompt_tokens,
-                            # Includes reasoning tokens on reasoning models --
-                            # same convention as Anthropic, where thinking
-                            # counts toward output. Billed spend, not visible
-                            # length.
-                            output_tokens=event.usage.completion_tokens,
-                        ),
-                        metadata=self._usage_metadata(event.id, event.usage),
+                    usage = TokenUsage(
+                        input_tokens=event.usage.prompt_tokens,
+                        # Includes reasoning tokens on reasoning models -- same
+                        # convention as Anthropic, where thinking counts toward
+                        # output. Billed spend, not visible length.
+                        output_tokens=event.usage.completion_tokens,
                     )
-                    continue
+                    metadata = self._usage_metadata(event.id, event.usage)
 
-                if not event.choices:
-                    continue
+                delta_text = ""
+                finish_reason: str | None = None
+                if event.choices:
+                    choice = event.choices[0]
+                    delta_text = choice.delta.content or ""
+                    finish_reason = choice.finish_reason
 
-                choice = event.choices[0]
-                yield StreamChunk(
-                    delta_text=choice.delta.content or "",
-                    finish_reason=choice.finish_reason,
-                )
+                # Skip only events carrying nothing at all -- keepalives and
+                # role-only openers.
+                if delta_text or usage is not None or finish_reason is not None:
+                    yield StreamChunk(
+                        delta_text=delta_text,
+                        finish_reason=finish_reason,
+                        usage=usage,
+                        metadata=metadata,
+                    )
         except openai.APIError as exc:
             raise self._translate(exc) from exc
 

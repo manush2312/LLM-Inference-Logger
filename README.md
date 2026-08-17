@@ -162,8 +162,8 @@ enabled by putting a credential in `.env` and restarting.
 | Provider | Cost | Where to get a key |
 |---|---|---|
 | `mock` | Free, no network | — always available |
-| `groq` | **Free tier, no card** | <https://console.groq.com> |
-| `gemini` | **Free tier, no card** | <https://aistudio.google.com/apikey> |
+| `groq` | **Free tier, no card** | <https://console.groq.com> — verified live |
+| `gemini` | **Free tier, no card** | <https://aistudio.google.com/apikey> — verified live |
 | `ollama` | **Free, fully local** | `brew install ollama && ollama serve && ollama pull llama3.2:1b`, then `OLLAMA_ENABLED=true` |
 | `anthropic` | Prepaid, ~$5 min | <https://platform.claude.com> |
 | `openai` | Prepaid, ~$5 min | <https://platform.openai.com> |
@@ -332,6 +332,30 @@ Smaller, but the same theme — each was invisible until something ran:
 - **`capabilities: drop: ["ALL"]` broke nginx**, whose entrypoint needs
   `CAP_CHOWN`. Fixed by switching to the unprivileged image rather than
   loosening the security context to suit the base image.
+- **A vendor put `usage` on every chunk, and the adapter threw the text away.**
+  Gemini streamed a complete answer; the app displayed nothing, recorded
+  `success`, and logged 40 output tokens. The adapter read usage and content as
+  mutually exclusive — `if event.usage: yield usage; continue` — which is right
+  for OpenAI, where usage arrives once on a trailing event with no `choices`, and
+  catastrophic for Gemini, which attaches usage to *every* delta. Every text
+  chunk was skipped.
+
+  This is the same failure shape as the rest of this list: not a crash, a
+  confident and completely empty answer. Both are now read from the same event,
+  with a regression test that replays a Gemini-shaped stream without needing a
+  key.
+- **My defaults for both free providers were stale on first contact.**
+  `llama-3.3-70b-versatile` and `gemini-2.0-flash` had both been retired. Each
+  returned a clean 404 naming the problem — the adapters' error translation
+  working — and the fix was to *ask the vendor* (`GET {base_url}/models`) rather
+  than trust a default that had aged. Gemini now pins `-latest` precisely because
+  pinning is what went stale.
+- **Groq's free tier counts `max_completion_tokens` against its TPM budget.** So
+  the global 16,000 default was not merely generous there, it was fatal: `413
+  rate_limit_exceeded — Limit 8000, Requested 16076`, rejected before generating
+  anything. Output ceilings are now a per-provider property that clamps the
+  configured budget, because "what the caller wants" and "what the provider will
+  accept" are different facts.
 - **Fixing the vanishing message broke streaming.** Moving the navigate to the
   `start` frame made a `useEffect` keyed on `conversationId` fire *mid-stream*,
   and that effect called `reset()` — wiping the accumulating tokens, so the reply

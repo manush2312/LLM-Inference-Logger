@@ -93,15 +93,27 @@ class Settings(BaseSettings):
     # Groq, Gemini and Ollama all speak OpenAI's wire format at a different
     # address, so each needs only a credential, a URL and a default model.
 
+    # Vendor catalogues churn faster than this file does. Both of these
+    # defaults were wrong on first contact -- `llama-3.3-70b-versatile` and
+    # `gemini-2.0-flash` had both been retired -- and each produced a clean 404
+    # naming the problem, which is the adapters' error translation working. Ask
+    # the vendor rather than trusting a default that has aged:
+    #   GET {base_url}/models   with the same Authorization header.
+
     #: Groq. Free tier, no card required.
     groq_api_key: str | None = None
     groq_base_url: str = GROQ_BASE_URL
-    default_groq_model: str = "llama-3.3-70b-versatile"
+    default_groq_model: str = "openai/gpt-oss-20b"
+    #: Below the free tier's 8000 tokens-per-minute budget, which
+    #: `max_completion_tokens` counts against in full.
+    groq_max_output_tokens: int = Field(default=4096, ge=256)
 
     #: Google Gemini via its OpenAI-compatibility endpoint. Free tier.
+    #: `-latest` rather than a pinned version, precisely because pinning is what
+    #: went stale here.
     gemini_api_key: str | None = None
     gemini_base_url: str = GEMINI_BASE_URL
-    default_gemini_model: str = "gemini-2.0-flash"
+    default_gemini_model: str = "gemini-flash-latest"
 
     #: A model on this machine. Gated on an explicit opt-in rather than probed:
     #: registering a provider we cannot reach would turn a clear "not
