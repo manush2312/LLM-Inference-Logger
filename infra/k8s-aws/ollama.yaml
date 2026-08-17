@@ -61,14 +61,25 @@ spec:
             # unable to reach it.
             - name: OLLAMA_HOST
               value: "0.0.0.0"
-            # The memory decision on a 4 GB node. k3s takes ~1.2 GB and the rest
-            # of the stack ~1 GB, leaving under 1.5 GB -- less than this model
-            # needs while resident. Unloading after 30s idle means the 2 GB spike
-            # exists only while a reply is actually being generated, and the
-            # node's swap absorbs it. Without this, Ollama holds the model
-            # forever and something eventually gets OOM-killed.
+            # Measured, not guessed. At 30s this was the single worst setting in
+            # the deployment: cold TTFT 13073ms, warm TTFT 645ms and 577ms on the
+            # two requests straight after -- a 20x difference that is entirely
+            # model load time, not inference. Warm Ollama is in fact faster to
+            # first token than Groq over the network (577ms vs 1043ms).
+            #
+            # 30s guaranteed the worst case for the actual usage pattern: a person
+            # reads a reply and thinks before sending the next one, which is always
+            # more than 30 seconds, so essentially every real request paid the full
+            # 13s reload. It looked like a broken integration and was a config
+            # choice.
+            #
+            # 30m keeps the model resident across a demo or an interview, and still
+            # releases ~2 GB when the site is genuinely idle. Not -1 (never unload):
+            # on a 3.7 GB node that risks the weights themselves being paged to
+            # swap, which turns every token into a disk read and is far worse than
+            # a one-off 13s load.
             - name: OLLAMA_KEEP_ALIVE
-              value: "30s"
+              value: "30m"
             # One model, one request at a time. Both default higher, and either
             # default multiplies the resident footprint on a box that has no room
             # for the multiplication.
@@ -134,6 +145,12 @@ spec:
               echo "pulling ${OLLAMA_MODEL}"
               ollama pull "${OLLAMA_MODEL}"
               ollama list
+              # Load it into memory now rather than making the first visitor wait
+              # 13s. A pull only puts the weights on disk; nothing is resident
+              # until something generates. One throwaway token does it.
+              echo "warming the model..."
+              ollama run "${OLLAMA_MODEL}" "hi" >/dev/null 2>&1 || true
+              echo "warm"
           envFrom:
             - configMapRef:
                 name: app-config

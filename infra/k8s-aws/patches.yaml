@@ -106,7 +106,13 @@ metadata:
   namespace: llm-logger
 spec:
   minReplicas: 1
-  maxReplicas: 3
+  # Lowered from 3 after watching it happen: startup churn (image pulls,
+  # migrations) pegged CPU, the HPA read that as load and scaled to 3, and the two
+  # extra workers took ~250 MB and a share of 2 vCPUs that Ollama needed. This is
+  # the limitation the README already documents -- CPU is a poor proxy for queue
+  # depth -- costing real memory on a small node. Capping is the cheap fix;
+  # scaling on Redis stream depth is the correct one.
+  maxReplicas: 2
 ---
 # Ollama is reachable in-cluster, so the base's host.docker.internal default (which
 # means "the laptop running Docker Desktop") is replaced with the Service. OLLAMA_MODEL
