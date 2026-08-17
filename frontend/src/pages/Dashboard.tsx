@@ -33,6 +33,7 @@ import {
 import { Link } from "react-router-dom";
 import { useMetrics, useRecentErrors, type TimeBucket } from "../api/metrics";
 import { useReducedMotion } from "../hooks/useReducedMotion";
+import { RecentCalls } from "../components/RecentCalls";
 import "./Dashboard.css";
 
 /**
@@ -273,6 +274,12 @@ export function Dashboard() {
           </tbody>
         </table>
       </section>
+
+      {/* Deduped: the breakdown is keyed by provider *and* model, so a provider
+          serving two models would otherwise appear twice in the filter. */}
+      <RecentCalls
+        providers={[...new Set((data?.providers ?? []).map((p) => p.provider))].sort()}
+      />
 
       <section className="panel">
         <h2 className="panel__title">Recent errors</h2>

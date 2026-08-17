@@ -248,3 +248,126 @@
 .panel:has(.table) {
   overflow-x: auto;
 }
+
+/* --- Recent calls (per-call log browser) --------------------------------- */
+.calls__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.calls__filters {
+  display: flex;
+  gap: 8px;
+}
+.calls__select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.calls__row {
+  cursor: pointer;
+}
+.calls__row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* The toggle is a real button for keyboard and screen-reader access, but must not
+   look like one -- it sits inside a dense table cell. */
+.calls__toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  /* Status colours are reserved for status and never reused as series colours.
+     Each badge carries its own text label, so state is never colour alone. */
+  border: 1px solid currentColor;
+}
+.badge--success { color: var(--status-good, #4ec9a0); }
+.badge--error { color: var(--danger); }
+.badge--cancelled { color: var(--status-warning, #e0a458); }
+
+.calls__detail {
+  padding: 14px 11px 18px;
+  background: var(--bg);
+}
+.calls__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  margin: 0 0 12px;
+}
+.calls__metaitem dt {
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.calls__metaitem dd {
+  margin: 2px 0 0;
+  font-size: 0.86rem;
+}
+.calls__error {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--danger);
+  background: rgba(240, 97, 109, 0.08);
+  font-size: 0.85rem;
+}
+.calls__preview {
+  margin-bottom: 10px;
+}
+.calls__preview h3 {
+  margin: 0 0 4px;
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.calls__preview pre {
+  margin: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  /* Wrap rather than scroll: a preview is prose, and a horizontal scrollbar per
+     row makes a table of them unreadable. */
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.82rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.calls__note {
+  margin: 8px 0 0;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+.calls__more {
+  margin-top: 12px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+.calls__more:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, literal, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.db.models import InferenceLog
@@ -47,6 +47,7 @@ class InferenceLogRepository(Repository):
         conversation_id: uuid.UUID | None = None,
         since: datetime | None = None,
         before: datetime | None = None,
+        before_id: uuid.UUID | None = None,
     ) -> list[InferenceLog]:
         """Newest-first listing.
 
@@ -55,6 +56,17 @@ class InferenceLogRepository(Repository):
         linearly as a reader pages into a table that this one is designed to
         grow without bound. The cursor rides the existing
         `ix_inference_logs_started_at DESC` index instead.
+
+        `before_id` completes the cursor, and without it pagination silently
+        loses rows. The ordering is `(started_at DESC, id DESC)`, so the cursor
+        has to be the same pair: filtering on `started_at < before` alone drops
+        every row that *shares* the boundary timestamp. Two inferences finishing
+        in the same microsecond is not exotic -- concurrent requests do it -- and
+        the symptom is the worst kind, a log viewer that is simply missing
+        entries with nothing to indicate it.
+
+        Passing `before` alone is still supported for callers that only want a
+        time bound rather than a cursor.
         """
         stmt: Select[tuple[InferenceLog]] = select(InferenceLog)
 
@@ -69,7 +81,21 @@ class InferenceLogRepository(Repository):
         if since is not None:
             stmt = stmt.where(InferenceLog.started_at >= since)
         if before is not None:
-            stmt = stmt.where(InferenceLog.started_at < before)
+            if before_id is not None:
+                # Row-value comparison, which Postgres can satisfy from the same
+                # index the ORDER BY uses. Expressing it as
+                # `started_at < b OR (started_at = b AND id < bid)` would be
+                # equivalent but harder to read and easier to get backwards.
+                # literal() on the right-hand side because `tuple_` builds a SQL
+                # row constructor and needs expressions, not bare Python values --
+                # mypy catches that, and passing the raw values would otherwise be
+                # a plausible-looking runtime surprise.
+                stmt = stmt.where(
+                    tuple_(InferenceLog.started_at, InferenceLog.id)
+                    < tuple_(literal(before), literal(before_id))
+                )
+            else:
+                stmt = stmt.where(InferenceLog.started_at < before)
 
         stmt = stmt.order_by(InferenceLog.started_at.desc(), InferenceLog.id.desc()).limit(limit)
         return list((await self._session.scalars(stmt)).all())

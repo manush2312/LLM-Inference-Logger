@@ -372,3 +372,117 @@ async def test_breakdown_reports_cancellations_per_provider(clean: Database) -> 
 
     assert rows["slowvendor"].cancellations == 1
     assert rows["fastvendor"].cancellations == 0
+
+
+# --- /metrics/logs -----------------------------------------------------------
+# The dashboard could answer "how is the system behaving" and "what broke", and
+# had no answer for "show me that one call" -- the individual row was reachable
+# only from psql, in a system whose product is the log.
+
+
+async def test_logs_lists_successes_not_only_errors(api_client: _ApiClient) -> None:
+    now = datetime.now(UTC)
+    await insert(
+        api_client.database,
+        make_event(completed_at=now, provider="groq", model="fast"),
+        make_event(
+            completed_at=now - timedelta(seconds=1),
+            provider="mock",
+            model="broken",
+            status=InferenceStatus.ERROR,
+            error_type="ProviderError",
+            error_message="simulated upstream failure",
+        ),
+    )
+
+    body = (await api_client.get("/metrics/logs?limit=10")).json()
+
+    statuses = {row["status"] for row in body["items"]}
+    assert statuses == {"success", "error"}, "the browser must show successes too"
+    # Newest first.
+    assert body["items"][0]["provider"] == "groq"
+
+
+async def test_logs_expose_the_fields_the_errors_panel_omits(api_client: _ApiClient) -> None:
+    """Token counts and finish reason are the point of a per-call view."""
+    await insert(
+        api_client.database,
+        make_event(
+            completed_at=datetime.now(UTC),
+            input_tokens=123,
+            output_tokens=456,
+            finish_reason="stop",
+            ttft_ms=42,
+        ),
+    )
+
+    row = (await api_client.get("/metrics/logs?limit=1")).json()["items"][0]
+
+    assert row["input_tokens"] == 123
+    assert row["output_tokens"] == 456
+    assert row["finish_reason"] == "stop"
+    assert row["ttft_ms"] == 42
+    assert row["streamed"] is not None
+    assert row["completed_at"] is not None
+
+
+async def test_logs_filter_by_provider_and_status(api_client: _ApiClient) -> None:
+    now = datetime.now(UTC)
+    await insert(
+        api_client.database,
+        make_event(completed_at=now, provider="groq"),
+        make_event(completed_at=now, provider="gemini"),
+        make_event(completed_at=now, provider="groq", status=InferenceStatus.CANCELLED),
+    )
+
+    only_groq = (await api_client.get("/metrics/logs?provider=groq")).json()["items"]
+    assert {r["provider"] for r in only_groq} == {"groq"}
+    assert len(only_groq) == 2
+
+    cancelled = (await api_client.get("/metrics/logs?status=cancelled")).json()["items"]
+    assert [r["status"] for r in cancelled] == ["cancelled"]
+
+
+async def test_pagination_does_not_skip_rows_sharing_a_timestamp(
+    api_client: _ApiClient,
+) -> None:
+    """The reason the cursor is `(started_at, id)` and not `started_at` alone.
+
+    Ordering is `(started_at DESC, id DESC)`, so a cursor of only `started_at <
+    before` drops every row that *shares* the boundary timestamp. Concurrent
+    inferences completing in the same microsecond is ordinary, and the symptom is
+    the worst kind: a log viewer quietly missing entries, with nothing on screen
+    to say so.
+
+    Four rows on one identical timestamp, paged two at a time, must yield four
+    distinct rows.
+    """
+    same_instant = datetime.now(UTC)
+    await insert(
+        api_client.database,
+        *(make_event(completed_at=same_instant) for _ in range(4)),
+    )
+
+    seen: list[str] = []
+    query = "/metrics/logs?limit=2"
+    for _ in range(4):  # bounded, so a broken cursor cannot loop forever
+        page = (await api_client.get(query)).json()
+        seen.extend(row["id"] for row in page["items"])
+        if page["next_before"] is None:
+            break
+        query = (
+            f"/metrics/logs?limit=2&before={page['next_before']}&before_id={page['next_before_id']}"
+        )
+
+    assert len(set(seen)) == 4, f"paged {len(set(seen))} distinct rows of 4: {seen}"
+
+
+async def test_no_cursor_is_offered_on_a_short_page(api_client: _ApiClient) -> None:
+    """A cursor on a partial page advertises an empty next page."""
+    await insert(api_client.database, make_event(completed_at=datetime.now(UTC)))
+
+    body = (await api_client.get("/metrics/logs?limit=50")).json()
+
+    assert len(body["items"]) == 1
+    assert body["next_before"] is None
+    assert body["next_before_id"] is None

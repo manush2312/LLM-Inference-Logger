@@ -8,6 +8,7 @@ in compose and Kubernetes, and for full control over the panels.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
@@ -188,3 +189,102 @@ async def recent_errors(
         )
         for log in logs
     ]
+
+
+class LogRowOut(BaseModel):
+    """One inference, in full.
+
+    Wider than `RecentLogOut` on purpose. That model backs the errors panel,
+    where the question is "what broke"; this one backs a browser over every call,
+    where the questions are about cost and latency attribution, so the token
+    counts, the completion reason and whether the call streamed all matter.
+    """
+
+    id: str
+    conversation_id: str | None
+    provider: str
+    model: str
+    status: str
+    streamed: bool
+    started_at: datetime
+    completed_at: datetime
+    latency_ms: int | None
+    ttft_ms: int | None
+    input_tokens: int | None
+    output_tokens: int | None
+    finish_reason: str | None
+    error_type: str | None
+    error_message: str | None
+    input_preview: str | None
+    output_preview: str | None
+
+
+class LogPage(BaseModel):
+    items: list[LogRowOut]
+    #: Feed both back as `before` and `before_id` for the next page. Null means
+    #: this is the last page.
+    next_before: datetime | None
+    next_before_id: str | None
+
+
+@router.get("/logs", response_model=LogPage)
+async def recent_logs(
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=200)] = 25,
+    provider: Annotated[str | None, Query(max_length=64)] = None,
+    status: InferenceStatus | None = None,
+    before: datetime | None = None,
+    before_id: uuid.UUID | None = None,
+) -> LogPage:
+    """Every inference, newest first -- not only the failures.
+
+    The dashboard answered "how is the system behaving" in aggregate and "what
+    broke" for errors, and had no answer at all for "show me that one call".
+    For a system whose product *is* the log, the individual row is the thing, and
+    it was reachable only by opening psql.
+
+    Paginated by keyset rather than OFFSET: this table is designed to grow
+    without bound, and offset pagination re-scans every skipped row, so page 200
+    costs 200 pages of work. The cursor rides `(started_at DESC, id DESC)`.
+    """
+    repo = InferenceLogRepository(session)
+    rows = await repo.list_recent(
+        limit=limit,
+        provider=provider,
+        status=status,
+        before=before,
+        before_id=before_id,
+    )
+
+    items = [
+        LogRowOut(
+            id=str(log.id),
+            conversation_id=str(log.conversation_id) if log.conversation_id else None,
+            provider=log.provider,
+            model=log.model,
+            status=log.status.value,
+            streamed=log.streamed,
+            started_at=log.started_at,
+            completed_at=log.completed_at,
+            latency_ms=log.latency_ms,
+            ttft_ms=log.ttft_ms,
+            input_tokens=log.input_tokens,
+            output_tokens=log.output_tokens,
+            finish_reason=log.finish_reason,
+            error_type=log.error_type,
+            error_message=log.error_message,
+            input_preview=log.input_preview,
+            output_preview=log.output_preview,
+        )
+        for log in rows
+    ]
+
+    # A cursor is only offered when the page came back full. Emitting one for a
+    # short page would advertise a next page that is empty, and a client that
+    # follows cursors until they run out would make one wasted request per poll.
+    last = rows[-1] if len(rows) == limit else None
+    return LogPage(
+        items=items,
+        next_before=last.started_at if last else None,
+        next_before_id=str(last.id) if last else None,
+    )

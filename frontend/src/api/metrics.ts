@@ -1,4 +1,4 @@
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "";
 
@@ -56,6 +56,34 @@ export interface MetricsSummary {
   ingestion: IngestionHealth;
 }
 
+/** One inference, in full. Wider than ErrorLog: this view answers questions
+ *  about cost and latency attribution, not just about what broke. */
+export interface LogRow {
+  id: string;
+  conversation_id: string | null;
+  provider: string;
+  model: string;
+  status: string;
+  streamed: boolean;
+  started_at: string;
+  completed_at: string;
+  latency_ms: number | null;
+  ttft_ms: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  finish_reason: string | null;
+  error_type: string | null;
+  error_message: string | null;
+  input_preview: string | null;
+  output_preview: string | null;
+}
+
+export interface LogPage {
+  items: LogRow[];
+  next_before: string | null;
+  next_before_id: string | null;
+}
+
 export interface ErrorLog {
   id: string;
   provider: string;
@@ -95,5 +123,43 @@ export function useRecentErrors() {
     queryKey: ["metrics", "errors"],
     queryFn: () => get<ErrorLog[]>("/metrics/errors?limit=15"),
     refetchInterval: 10_000,
+  });
+}
+
+export interface LogFilters {
+  provider?: string;
+  status?: string;
+}
+
+/**
+ * Per-call log browsing, paginated by keyset.
+ *
+ * `useInfiniteQuery` rather than `useQuery` because the cursor is a pair --
+ * (started_at, id) -- and the server decides when there is no next page by
+ * returning nulls. Threading that through manual state would duplicate what the
+ * infinite-query cursor protocol already does.
+ *
+ * Not polled. The aggregate panels refresh every 5s because they are a live
+ * view; this is a reader that someone is scrolling, and repointing page 1 under
+ * them mid-read would be hostile.
+ */
+export function useLogs(filters: LogFilters, pageSize = 25) {
+  return useInfiniteQuery({
+    queryKey: ["metrics", "logs", filters, pageSize],
+    initialPageParam: null as { before: string; before_id: string } | null,
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: String(pageSize) });
+      if (filters.provider) params.set("provider", filters.provider);
+      if (filters.status) params.set("status", filters.status);
+      if (pageParam) {
+        params.set("before", pageParam.before);
+        params.set("before_id", pageParam.before_id);
+      }
+      return get<LogPage>(`/metrics/logs?${params.toString()}`);
+    },
+    getNextPageParam: (last) =>
+      last.next_before && last.next_before_id
+        ? { before: last.next_before, before_id: last.next_before_id }
+        : undefined,
   });
 }
