@@ -48,8 +48,17 @@ class ProviderBreakdown:
     model: str
     requests: int
     errors: int
+    #: Reported per provider, not only in the totals. A provider being
+    #: cancelled disproportionately often is a signal about *it* -- usually
+    #: that it is too slow to first token and users give up -- and that is
+    #: invisible if cancellations are only ever aggregated.
+    cancellations: int
     p50_latency_ms: float | None
     p95_latency_ms: float | None
+    #: Per provider, because time-to-first-token is the number that differs most
+    #: between them -- a thinking model can spend tens of seconds before its
+    #: first visible token while a fast one answers in under a second.
+    p95_ttft_ms: float | None
     input_tokens: int
     output_tokens: int
 
@@ -165,8 +174,10 @@ class MetricsRepository(Repository):
                 InferenceLog.model,
                 func.count().label("requests"),
                 _count_where(InferenceLog.status == InferenceStatus.ERROR).label("errors"),
+                _count_where(InferenceLog.status == InferenceStatus.CANCELLED).label("cancels"),
                 _percentile(0.5, InferenceLog.latency_ms).label("p50"),
                 _percentile(0.95, InferenceLog.latency_ms).label("p95"),
+                _percentile(0.95, InferenceLog.ttft_ms).label("p95_ttft"),
                 func.coalesce(func.sum(InferenceLog.input_tokens), 0).label("input_tokens"),
                 func.coalesce(func.sum(InferenceLog.output_tokens), 0).label("output_tokens"),
             )
@@ -181,8 +192,10 @@ class MetricsRepository(Repository):
                 model=row.model,
                 requests=row.requests,
                 errors=row.errors,
+                cancellations=row.cancels,
                 p50_latency_ms=row.p50,
                 p95_latency_ms=row.p95,
+                p95_ttft_ms=row.p95_ttft,
                 input_tokens=row.input_tokens,
                 output_tokens=row.output_tokens,
             )

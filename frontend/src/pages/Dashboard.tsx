@@ -226,8 +226,13 @@ export function Dashboard() {
               <th>Model</th>
               <th className="num">Requests</th>
               <th className="num">Errors</th>
+              <th className="num">Cancelled</th>
               <th className="num">p50 ms</th>
               <th className="num">p95 ms</th>
+              {/* Per provider, because TTFT is the number that differs most
+                  between them: a thinking model can spend tens of seconds
+                  before its first visible token. */}
+              <th className="num">p95 TTFT</th>
               <th className="num">Tokens in</th>
               <th className="num">Tokens out</th>
             </tr>
@@ -239,15 +244,17 @@ export function Dashboard() {
                 <td>{row.model}</td>
                 <td className="num">{row.requests}</td>
                 <td className="num">{row.errors}</td>
+                <td className="num">{row.cancellations}</td>
                 <td className="num">{row.p50_latency_ms ?? "—"}</td>
                 <td className="num">{row.p95_latency_ms ?? "—"}</td>
+                <td className="num">{row.p95_ttft_ms ?? "—"}</td>
                 <td className="num">{row.input_tokens}</td>
                 <td className="num">{row.output_tokens}</td>
               </tr>
             ))}
             {data?.providers.length === 0 && (
               <tr>
-                <td colSpan={8} className="table__empty">
+                <td colSpan={10} className="table__empty">
                   No calls in this window.
                 </td>
               </tr>

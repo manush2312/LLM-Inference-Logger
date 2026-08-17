@@ -163,7 +163,7 @@ enabled by putting a credential in `.env` and restarting.
 |---|---|---|
 | `mock` | Free, no network | — always available |
 | `groq` | **Free tier, no card** | <https://console.groq.com> — verified live |
-| `gemini` | **Free tier, no card** | <https://aistudio.google.com/apikey> — verified live |
+| `gemini` | **Free tier, no card** | <https://aistudio.google.com/apikey> — verified live. `gemini-flash-latest` is a *thinking* model: expect a p95 TTFT in the tens of seconds even on trivial prompts |
 | `ollama` | **Free, fully local** | `brew install ollama && ollama serve && ollama pull llama3.2:1b`, then `OLLAMA_ENABLED=true` |
 | `anthropic` | Prepaid, ~$5 min | <https://platform.claude.com> |
 | `openai` | Prepaid, ~$5 min | <https://platform.openai.com> |

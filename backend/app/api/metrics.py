@@ -38,8 +38,10 @@ class ProviderBreakdownOut(BaseModel):
     model: str
     requests: int
     errors: int
+    cancellations: int
     p50_latency_ms: int | None
     p95_latency_ms: int | None
+    p95_ttft_ms: int | None
     input_tokens: int
     output_tokens: int
 

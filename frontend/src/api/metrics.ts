@@ -17,8 +17,10 @@ export interface ProviderBreakdown {
   model: string;
   requests: number;
   errors: number;
+  cancellations: number;
   p50_latency_ms: number | null;
   p95_latency_ms: number | null;
+  p95_ttft_ms: number | null;
   input_tokens: number;
   output_tokens: number;
 }

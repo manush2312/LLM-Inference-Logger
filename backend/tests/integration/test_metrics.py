@@ -345,3 +345,30 @@ async def test_invalid_interval_is_rejected_by_validation(api_client: _ApiClient
     response = await api_client.get("/metrics/summary?interval=minute'); DROP TABLE--")
 
     assert response.status_code == 422
+
+
+async def test_breakdown_reports_cancellations_per_provider(clean: Database) -> None:
+    """Aggregated cancellations hide which provider is being abandoned.
+
+    A provider cancelled disproportionately often is usually one that is slow to
+    first token, and that is a fact about *it* -- invisible if cancellations only
+    ever appear in the totals.
+    """
+    now = datetime.now(UTC)
+    await insert(
+        clean,
+        make_event(completed_at=now, provider="slowvendor", model="m"),
+        make_event(
+            completed_at=now, provider="slowvendor", model="m", status=InferenceStatus.CANCELLED
+        ),
+        make_event(completed_at=now, provider="fastvendor", model="m"),
+    )
+
+    async with clean.session() as session:
+        rows = {
+            r.provider: r
+            for r in await MetricsRepository(session).by_provider(since=now - timedelta(minutes=5))
+        }
+
+    assert rows["slowvendor"].cancellations == 1
+    assert rows["fastvendor"].cancellations == 0
