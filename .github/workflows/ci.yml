@@ -61,10 +61,14 @@ jobs:
           REDIS_HOST: localhost
 
   frontend:
-    name: Frontend (lint, build)
+    name: Frontend (lint, test, build)
     runs-on: ubuntu-latest
-    # Skipped until the frontend lands in M2.
-    if: ${{ hashFiles('frontend/package.json') != '' }}
+    # This job was originally guarded with `if: hashFiles('frontend/package.json')
+    # != ''` so it would no-op until the frontend existed. That is invalid:
+    # `hashFiles` needs a checked-out workspace and is not available in a
+    # job-level `if`, so GitHub rejects the whole file with "Unrecognized
+    # function". It went unnoticed for the entire build because there was no
+    # remote -- nothing had ever parsed this file. The guard is moot now anyway.
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

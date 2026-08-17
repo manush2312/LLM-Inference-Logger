@@ -172,6 +172,16 @@ K8S := infra/k8s
 # $(K8S) above its definition silently yields a path with an empty prefix.
 INGRESS_VENDORED := $(K8S)/vendor/ingress-nginx-$(INGRESS_VERSION).yaml
 
+.PHONY: lint-actions
+lint-actions: ## Lint the GitHub Actions workflows (needs Docker)
+# Not part of `check`, which must run without Docker. Worth having as its own
+# target because a workflow file is only validated when GitHub parses it, so an
+# invalid one sits undetected until a push -- which is exactly what happened: an
+# `if: hashFiles(...)` guard was invalid from M1 and went unnoticed for the whole
+# build because there was no remote to reject it.
+	@docker run --rm -v "$$PWD:/repo" --workdir /repo rhysd/actionlint:latest -color \
+		&& echo "actionlint: clean"
+
 .PHONY: kind-up
 kind-up: ## Create the local cluster and install an ingress controller
 	kind create cluster --config $(K8S)/kind-cluster.yaml
