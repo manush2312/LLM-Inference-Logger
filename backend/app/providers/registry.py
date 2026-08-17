@@ -14,6 +14,11 @@ from app.core.logging import get_logger
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.base import BaseProvider
 from app.providers.mock import MockProvider
+from app.providers.openai_compatible import (
+    GeminiProvider,
+    GroqProvider,
+    OllamaProvider,
+)
 from app.providers.openai_provider import OpenAIProvider
 
 log = get_logger(__name__)
@@ -32,7 +37,29 @@ class ProviderRegistry:
             MockProvider(),
             AnthropicProvider(settings.anthropic_api_key, settings.default_anthropic_model),
             OpenAIProvider(settings.openai_api_key, settings.default_openai_model),
+            # OpenAI-compatible backends. Each keeps its own registry name so
+            # the dashboard can tell their traffic apart -- sharing `openai`
+            # would collapse them in every panel, which is the one thing a
+            # multi-provider observability tool must not do.
+            GroqProvider(
+                api_key=settings.groq_api_key,
+                base_url=settings.groq_base_url,
+                default_model=settings.default_groq_model,
+            ),
+            GeminiProvider(
+                api_key=settings.gemini_api_key,
+                base_url=settings.gemini_base_url,
+                default_model=settings.default_gemini_model,
+            ),
         ]
+
+        if settings.ollama_enabled:
+            candidates.append(
+                OllamaProvider(
+                    base_url=settings.ollama_base_url,
+                    default_model=settings.default_ollama_model,
+                )
+            )
 
         providers = {p.name: p for p in candidates if p.is_configured()}
         skipped = [p.name for p in candidates if not p.is_configured()]

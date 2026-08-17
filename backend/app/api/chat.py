@@ -129,6 +129,7 @@ async def list_providers(registry: RegistryDep) -> ProviderList:
                 name=name,
                 default_model=registry.get(name).default_model(),
                 is_default=name == registry.default_name,
+                models=registry.get(name).supported_models(),
             )
             for name in registry.available()
         ],

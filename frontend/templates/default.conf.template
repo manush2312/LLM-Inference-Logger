@@ -1,3 +1,16 @@
+# Resolve the backend at request time, not once at startup.
+#
+# nginx caches a static `proxy_pass hostname` for the process lifetime, so the
+# moment the backend container or pod gets a new IP -- any restart, any rolling
+# deploy -- every request 502s against the dead address until nginx itself is
+# restarted. Observed exactly that after recreating the backend container.
+#
+# Two halves are required: a `resolver`, and a *variable* in `proxy_pass`, which
+# is what makes nginx defer the lookup. `NGINX_LOCAL_RESOLVERS` is populated by
+# the image's own entrypoint from /etc/resolv.conf, so this works unchanged
+# under Docker's embedded DNS and under Kubernetes' cluster DNS.
+resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
+
 server {
     # 8080, not 80: this runs as a non-root user with no
     # CAP_NET_BIND_SERVICE, so a privileged port is not bindable.
@@ -29,7 +42,12 @@ server {
     # Same-origin, so the browser never issues a cross-origin request in
     # production.
     location ~ ^/(chat|conversations|providers|metrics|healthz|readyz|docs|openapi\.json) {
-        proxy_pass http://backend:8000;
+        # Via a variable, so the resolver above is actually consulted. Note the
+        # explicit $request_uri: with a variable in proxy_pass nginx does *not*
+        # append the original URI for you, so omitting it silently sends every
+        # request to `/`.
+        set $upstream http://backend:8000;
+        proxy_pass $upstream$request_uri;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

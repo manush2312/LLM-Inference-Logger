@@ -22,6 +22,13 @@ from app.providers.base import BaseProvider, ChatRequest, StreamChunk, TokenUsag
 class OpenAIProvider(BaseProvider):
     name: ClassVar[str] = "openai"
 
+    #: Whether to ask for usage on the stream. True for OpenAI itself, which is
+    #: why it is the default -- but some OpenAI-*compatible* backends reject
+    #: `stream_options` outright, so subclasses can turn it off. Flipping it
+    #: costs token counts on that provider; leaving it wrongly on costs a 400
+    #: on every call.
+    requests_stream_usage: ClassVar[bool] = True
+
     def __init__(self, api_key: str | None, default_model: str) -> None:
         self._default_model = default_model
         self._client = AsyncOpenAI(api_key=api_key) if api_key else None
@@ -51,7 +58,7 @@ class OpenAIProvider(BaseProvider):
                 # Without this, a streaming response reports no usage at all
                 # and every OpenAI row would land with null token counts --
                 # silently breaking the cost panel for one provider only.
-                stream_options={"include_usage": True},
+                **self._usage_kwargs(),
             )
 
             async for event in stream:
@@ -81,6 +88,12 @@ class OpenAIProvider(BaseProvider):
                 )
         except openai.APIError as exc:
             raise self._translate(exc) from exc
+
+    def _usage_kwargs(self) -> dict[str, Any]:
+        """Request stream usage, unless this backend cannot accept the option."""
+        if not self.requests_stream_usage:
+            return {}
+        return {"stream_options": {"include_usage": True}}
 
     @staticmethod
     def _usage_metadata(request_id: str, usage: CompletionUsage) -> dict[str, Any]:

@@ -72,6 +72,11 @@ class ProviderInfo(BaseModel):
     name: str
     default_model: str
     is_default: bool
+    #: Models the UI may offer for this provider. Served from configuration
+    #: rather than fetched live from each vendor -- building a model picker must
+    #: not depend on a network round trip to every configured provider at page
+    #: load, and a vendor being slow must not make the app look broken.
+    models: list[str]
 
 
 class ProviderList(BaseModel):

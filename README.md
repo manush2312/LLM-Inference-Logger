@@ -42,7 +42,7 @@ load-bearing](#why-the-mock-provider-is-load-bearing).
 | **Instrumentation** | One `inference_logs` row per model call, always — latency, TTFT, tokens, status, redacted previews |
 | **Ingestion** | Events published to Redis Streams, consumed by a separate worker, written idempotently |
 | **Dashboard** | Latency percentiles, throughput by outcome, error rate, per-provider breakdown, and ingestion-pipeline health |
-| **Providers** | Anthropic, OpenAI, and a deterministic mock. Adding a provider requires no changes to the instrumentation |
+| **Providers** | Anthropic, OpenAI, Groq, Gemini, Ollama, and a deterministic mock. Adding a provider requires no changes to the instrumentation |
 
 ---
 
@@ -147,7 +147,33 @@ make test-all   # adds integration tests (needs make infra-up)
 
 109 tests. Unit tests need no Postgres, no Redis, and no API keys.
 
-### API keys (optional)
+### Providers
+
+Six are supported. **Mock needs nothing** and is the default; the others are
+enabled by putting a credential in `.env` and restarting.
+
+| Provider | Cost | Where to get a key |
+|---|---|---|
+| `mock` | Free, no network | — always available |
+| `groq` | **Free tier, no card** | <https://console.groq.com> |
+| `gemini` | **Free tier, no card** | <https://aistudio.google.com/apikey> |
+| `ollama` | **Free, fully local** | `brew install ollama && ollama pull llama3.2`, then `OLLAMA_ENABLED=true` |
+| `anthropic` | Prepaid, ~$5 min | <https://platform.claude.com> |
+| `openai` | Prepaid, ~$5 min | <https://platform.openai.com> |
+
+> A Claude.ai Pro or ChatGPT Plus subscription does **not** include API access.
+> They are separately billed products.
+
+Groq, Gemini and Ollama all speak the OpenAI wire format, so they reuse the
+existing OpenAI adapter pointed at a different `base_url` —
+see [`openai_compatible.py`](backend/app/providers/openai_compatible.py). Each
+keeps its **own** provider name rather than masquerading as `openai`, because
+`inference_logs.provider` is what every dashboard panel groups by; sharing a
+name would make two vendors' traffic indistinguishable, which is the one thing a
+multi-provider observability tool must not lose.
+
+The model picker is built from `/providers`, so it only ever offers what the
+server actually has credentials for — it cannot present an option that 400s.
 
 Drop `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` into `.env` and restart. The registry
 picks them up at startup; providers without a key are simply not registered, so a
@@ -299,6 +325,17 @@ Smaller, but the same theme — each was invisible until something ran:
 - **`capabilities: drop: ["ALL"]` broke nginx**, whose entrypoint needs
   `CAP_CHOWN`. Fixed by switching to the unprivileged image rather than
   loosening the security context to suit the base image.
+- **nginx cached the backend's IP forever.** A static `proxy_pass http://backend:8000`
+  is resolved once at startup, so the moment the backend container got a new
+  address every request 502'd against the dead one until nginx itself was
+  restarted — and in Kubernetes *every* rolling deploy changes pod IPs. Fixed
+  with a `resolver` plus a **variable** in `proxy_pass`, which is what defers
+  the lookup; verified by forcing the backend from `172.19.0.4` to
+  `172.19.0.7` and watching nginx follow it. Two traps inside the fix: a
+  variable `proxy_pass` does not append the original URI (so `$request_uri` is
+  explicit), and the image's resolver-population script returns early unless
+  `NGINX_ENTRYPOINT_LOCAL_RESOLVERS` is set — which left the placeholder
+  unsubstituted and nginx refusing to boot.
 
 ---
 

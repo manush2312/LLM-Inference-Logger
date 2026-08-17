@@ -115,6 +115,16 @@ class BaseProvider(ABC):
     def default_model(self) -> str:
         """Model used when the caller does not name one."""
 
+    def supported_models(self) -> list[str]:
+        """Models this provider advertises to the UI.
+
+        Defaults to just the configured default. Providers with a fixed, known
+        set (the mock) override it. Deliberately not a live API call: building
+        the model picker must not depend on a network round trip to every
+        configured vendor at page load.
+        """
+        return [self.default_model()]
+
     def is_configured(self) -> bool:
         """Whether this provider has what it needs to serve traffic.
 

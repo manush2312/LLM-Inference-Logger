@@ -79,16 +79,32 @@ export function ChatWindow() {
               <option value="">
                 {providers ? `Default (${providers.default})` : "Default"}
               </option>
-              {/* The mock behaviours are exposed here on purpose: streaming,
-                  slowness, failure and cancellation are all reachable from the
-                  UI rather than only from the test suite. */}
-              {providers?.items.some((p) => p.name === "mock") && (
-                <optgroup label="mock provider">
-                  <option value="mock">mock — normal</option>
-                  <option value="mock-slow">mock-slow — slow stream</option>
-                  <option value="mock-error">mock-error — fails mid-response</option>
-                  <option value="mock-cancel">mock-cancel — never ends, press Stop</option>
-                </optgroup>
+
+              {/* One group per provider the server actually has credentials
+                  for, built from /providers rather than hardcoded -- so the
+                  picker can never offer something that 400s on selection, and
+                  adding a provider needs no frontend change at all. */}
+              {providers?.items.map((provider) =>
+                provider.name === "mock" ? (
+                  // The mock's behaviours are spelled out because each one
+                  // exists to demonstrate a specific path -- slowness,
+                  // failure, cancellation -- and the labels are what make
+                  // those reachable from the UI rather than only from tests.
+                  <optgroup key={provider.name} label="mock (no network)">
+                    <option value="mock">mock — normal</option>
+                    <option value="mock-slow">mock-slow — slow stream</option>
+                    <option value="mock-error">mock-error — fails mid-response</option>
+                    <option value="mock-cancel">mock-cancel — never ends, press Stop</option>
+                  </optgroup>
+                ) : (
+                  <optgroup key={provider.name} label={provider.name}>
+                    {provider.models.map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </optgroup>
+                ),
               )}
             </select>
           </label>

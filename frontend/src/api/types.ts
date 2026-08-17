@@ -47,6 +47,7 @@ export interface ProviderInfo {
   name: string;
   default_model: string;
   is_default: boolean;
+  models: string[];
 }
 
 export interface ProviderList {

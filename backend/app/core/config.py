@@ -15,6 +15,12 @@ from typing import Literal
 from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.providers.openai_compatible import (
+    GEMINI_BASE_URL,
+    GROQ_BASE_URL,
+    OLLAMA_BASE_URL,
+)
+
 # Repo root, so a single .env at the top level serves backend + tooling.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -82,6 +88,29 @@ class Settings(BaseSettings):
     default_provider: str = "mock"
     default_anthropic_model: str = "claude-opus-5"
     default_openai_model: str = "gpt-4o"
+
+    # --- OpenAI-compatible backends ----------------------------------------
+    # Groq, Gemini and Ollama all speak OpenAI's wire format at a different
+    # address, so each needs only a credential, a URL and a default model.
+
+    #: Groq. Free tier, no card required.
+    groq_api_key: str | None = None
+    groq_base_url: str = GROQ_BASE_URL
+    default_groq_model: str = "llama-3.3-70b-versatile"
+
+    #: Google Gemini via its OpenAI-compatibility endpoint. Free tier.
+    gemini_api_key: str | None = None
+    gemini_base_url: str = GEMINI_BASE_URL
+    default_gemini_model: str = "gemini-2.0-flash"
+
+    #: A model on this machine. Gated on an explicit opt-in rather than probed:
+    #: registering a provider we cannot reach would turn a clear "not
+    #: configured" error into a connection failure mid-stream.
+    ollama_enabled: bool = False
+    #: Inside a container `localhost` is the container, so compose and
+    #: Kubernetes must point at the host explicitly.
+    ollama_base_url: str = OLLAMA_BASE_URL
+    default_ollama_model: str = "llama3.2"
 
     #: Caps provider output. On models with reasoning enabled this budget
     #: covers reasoning *and* the visible answer, so a value tuned for answer

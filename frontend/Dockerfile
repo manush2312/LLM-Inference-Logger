@@ -29,8 +29,17 @@ RUN npm run build
 # image would be the wrong way round.
 FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
 
+# Opts the entrypoint into populating NGINX_LOCAL_RESOLVERS from
+# /etc/resolv.conf. The script that does it returns early unless this is
+# set, which leaves the placeholder unsubstituted and nginx refusing to
+# start with `host not found in resolver "${NGINX_LOCAL_RESOLVERS}"`.
+ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
+
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
+# A template, not a finished conf: the image's entrypoint runs envsubst over
+# /etc/nginx/templates/*.template, which is how ${NGINX_LOCAL_RESOLVERS} gets
+# filled in from the container's own /etc/resolv.conf.
+COPY templates/default.conf.template /etc/nginx/templates/default.conf.template
 
 # Unprivileged nginx binds an unprivileged port; 80 would need
 # CAP_NET_BIND_SERVICE.
