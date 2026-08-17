@@ -213,7 +213,7 @@ are landing, not from whether the process is up.
 
 | Layer | What it covers | Needs |
 |---|---|---|
-| Unit (49) | Event contract, redaction, providers, registry, wrapper invariants, health probes | Nothing |
+| Unit (57) | Event contract, redaction, providers, registry, wrapper invariants, health probes | Nothing |
 | Integration (60) | Repositories, chat API, streaming + cancellation, ingestion, metrics | Postgres |
 
 `make test` runs unit tests only, so the fast gate needs no services and no keys.

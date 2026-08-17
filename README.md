@@ -4,7 +4,8 @@ Instrumentation, ingestion and observability for multi-provider LLM inference.
 
 A chat application that logs every model call — success, failure, or abandoned
 mid-stream — through an event pipeline into Postgres, and a dashboard that reads
-it back. Multi-provider (Anthropic, OpenAI) with a first-class mock provider, so
+it back. Multi-provider (Anthropic, OpenAI, Groq, Gemini, Ollama) with a first-class
+mock provider, so
 **the whole system runs and demonstrates itself with no API keys and no network.**
 
 ```bash
@@ -66,7 +67,8 @@ load-bearing](#why-the-mock-provider-is-load-bearing).
                     │  └──────────────┬────────────────┘  │
                     │  ┌──────────────▼────────────────┐  │
                     │  │  ProviderRegistry              │  │
-                    │  │  anthropic · openai · mock     │  │
+                    │  │  anthropic · openai · groq ·   │  │
+                    │  │  gemini · ollama · mock        │  │
                     │  └───────────────────────────────┘  │
                     └──────┬──────────────────────┬───────┘
                            │ EventBus (interface) │ SQL
@@ -145,7 +147,7 @@ make check      # ruff + mypy --strict + unit tests
 make test-all   # adds integration tests (needs make infra-up)
 ```
 
-109 tests. Unit tests need no Postgres, no Redis, and no API keys.
+117 tests. Unit tests need no Postgres, no Redis, and no API keys.
 
 ### Providers
 
