@@ -533,6 +533,15 @@ Stated rather than hidden.
   correct and would scale on any cluster that has one -- installing it here
   would verify the local path, but it is a cluster add-on rather than part of
   this deployment, so it is called out instead of quietly added.
+- **Rendering markdown costs 46 kB gzipped.** `react-markdown` + `remark-gfm`
+  take the main bundle from 87 kB to 132 kB gzipped. It is loaded eagerly rather
+  than behind `React.lazy`: the chat view exists to display replies, and a
+  Suspense boundary that resolves while the first token is arriving would flicker
+  in exactly the seam three streaming bugs already lived in. Deferring the
+  renderer that makes output readable is optimising the wrong axis.
+- **No syntax highlighting in code blocks.** Deliberate -- the grammars are
+  another ~100 kB gzipped for styling that is decorative here, whereas tables and
+  headings are what made the output unreadable.
 - **No authentication.** Single-user demo.
 - **`ConversationStatus.CANCELLED` is unused.** Cancellation is recorded on the
   inference log, where it belongs; the enum value is reserved.

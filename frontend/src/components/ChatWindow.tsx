@@ -4,6 +4,7 @@ import { ApiError } from "../api/client";
 import { useConversation, useProviders } from "../hooks/useChat";
 import { useStreamingChat } from "../hooks/useStreamingChat";
 import { Composer } from "./Composer";
+import { Markdown } from "./Markdown";
 import { MessageBubble } from "./MessageBubble";
 
 export function ChatWindow() {
@@ -209,7 +210,10 @@ export function ChatWindow() {
         {showProvisional && (
           <article className="bubble bubble--assistant bubble--streaming">
             <header className="bubble__role">assistant</header>
-            <div className="bubble__content">{stream.text}</div>
+            {/* Markdown while streaming, not only once settled. Rendering the
+                raw source mid-stream and swapping to formatted output at the end
+                would reflow the whole reply the instant it completed. */}
+            <Markdown content={stream.text} />
           </article>
         )}
 
