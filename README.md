@@ -159,7 +159,7 @@ enabled by putting a credential in `.env` and restarting.
 | `mock` | Free, no network | — always available |
 | `groq` | **Free tier, no card** | <https://console.groq.com> |
 | `gemini` | **Free tier, no card** | <https://aistudio.google.com/apikey> |
-| `ollama` | **Free, fully local** | `brew install ollama && ollama pull llama3.2`, then `OLLAMA_ENABLED=true` |
+| `ollama` | **Free, fully local** | `brew install ollama && ollama serve && ollama pull llama3.2:1b`, then `OLLAMA_ENABLED=true` |
 | `anthropic` | Prepaid, ~$5 min | <https://platform.claude.com> |
 | `openai` | Prepaid, ~$5 min | <https://platform.openai.com> |
 
@@ -327,6 +327,15 @@ Smaller, but the same theme — each was invisible until something ran:
 - **`capabilities: drop: ["ALL"]` broke nginx**, whose entrypoint needs
   `CAP_CHOWN`. Fixed by switching to the unprivileged image rather than
   loosening the security context to suit the base image.
+- **Compose never read the root `.env`.** It looks for `.env` in the *compose
+  file's* directory (`infra/`), not the repo root — so every
+  `${VAR:-default}` had been silently falling back to its default since M5.
+  The README's own instruction, "drop your API key in `.env` and restart",
+  would have done nothing: no key, no error, no clue. It stayed invisible until
+  a variable appeared whose default (`OLLAMA_ENABLED=false`) differed from what
+  was needed. Fixed with an explicit `--env-file .env`, chosen over
+  `--project-directory` because that would also have moved relative
+  build-context resolution.
 - **nginx cached the backend's IP forever.** A static `proxy_pass http://backend:8000`
   is resolved once at startup, so the moment the backend container got a new
   address every request 502'd against the dead one until nginx itself was

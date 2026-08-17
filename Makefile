@@ -3,7 +3,12 @@
 # the same statement.
 
 SHELL := /bin/bash
-COMPOSE := docker compose -f infra/docker-compose.yml
+# --env-file is not optional here. Compose looks for `.env` in the *compose
+# file's* directory (infra/), not the repo root, so without this every
+# ${VAR:-default} silently falls back to its default -- including the API keys
+# the README tells you to put in .env. Surgical on purpose: --project-directory
+# would also move relative build-context resolution.
+COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
 BACKEND := backend
 # --directory makes uv both resolve the project and run the command from
 # backend/, so tools that take relative paths (mypy, pytest, alembic) behave
