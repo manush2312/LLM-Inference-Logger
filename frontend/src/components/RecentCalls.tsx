@@ -123,6 +123,13 @@ function Row({
   isOpen: boolean;
   onToggle: () => void;
 }) {
+  // Defaulted rather than assumed present. The API always sends it, but backend
+  // and frontend roll independently: during a deploy the new bundle can be served
+  // while an old pod is still answering, and reaching into an absent object threw
+  // -- taking the whole dashboard down with it, not just this row. A test now
+  // pins that, having found it the hard way.
+  const meta: Record<string, unknown> = row.raw_metadata ?? {};
+
   return (
     <>
       <tr className="calls__row" onClick={onToggle}>
@@ -149,22 +156,71 @@ function Row({
       {isOpen && (
         <tr>
           <td colSpan={7} className="calls__detail">
-            <dl className="calls__meta">
-              <Meta label="Streamed">{row.streamed ? "yes" : "no"}</Meta>
-              <Meta label="Finish reason">{row.finish_reason ?? "—"}</Meta>
-              <Meta label="Conversation">
-                {row.conversation_id ? (
-                  // Errors and cancellations often have no conversation at all,
-                  // which is worth showing rather than rendering a dead link.
-                  <a href={`/c/${row.conversation_id}`}>open</a>
-                ) : (
-                  "—"
+            {/* Grouped rather than a flat list of fields. Timing, cost and
+                identity answer different questions, and the panel was previously
+                showing four fields while the row's most useful numbers -- the
+                token split and anything the vendor returned -- were either
+                unlabelled in the collapsed row or discarded at the API edge. */}
+            <div className="calls__groups">
+              <Group title="Timing">
+                <Meta label="Latency">{ms(row.latency_ms)}</Meta>
+                <Meta label="Time to first token">{ms(row.ttft_ms)}</Meta>
+                {/* Generation speed excludes TTFT on purpose: waiting for a
+                    provider to start is not the same as how fast it writes, and
+                    averaging them together hides which one is slow. */}
+                <Meta label="Generation">{tokensPerSecond(row)}</Meta>
+                <Meta label="Ingestion lag">{lag(row)}</Meta>
+              </Group>
+
+              <Group title="Tokens">
+                <Meta label="Input">{row.input_tokens ?? "—"}</Meta>
+                <Meta label="Output">{row.output_tokens ?? "—"}</Meta>
+                {/* Only present on reasoning models, and the only thing that
+                    explains a three-word answer reporting hundreds of output
+                    tokens. Billed, and invisible without this. */}
+                {typeof meta.reasoning_tokens === "number" && (
+                  <Meta label="of which reasoning">
+                    {meta.reasoning_tokens as number}
+                  </Meta>
                 )}
-              </Meta>
-              <Meta label="Log id">
-                <span className="mono">{row.id}</span>
-              </Meta>
-            </dl>
+                <Meta label="Total">{total(row)}</Meta>
+              </Group>
+
+              <Group title="Call">
+                <Meta label="Streamed">{row.streamed ? "yes" : "no"}</Meta>
+                <Meta label="Finish reason">{row.finish_reason ?? "—"}</Meta>
+                <Meta label="Started">
+                  {new Date(row.started_at).toLocaleString()}
+                </Meta>
+                <Meta label="Conversation">
+                  {row.conversation_id ? (
+                    // Errors and cancellations often have no conversation at all,
+                    // which is worth showing rather than rendering a dead link.
+                    <a href={`/c/${row.conversation_id}`}>open</a>
+                  ) : (
+                    "—"
+                  )}
+                </Meta>
+              </Group>
+
+              <Group title="Identifiers">
+                <Meta label="Log id">
+                  <code>{row.id}</code>
+                </Meta>
+                {/* What a provider's support will ask for. Captured all along and
+                    previously thrown away before it reached the UI. */}
+                {typeof meta.provider_request_id === "string" && (
+                  <Meta label="Provider request id">
+                    <code>{meta.provider_request_id as string}</code>
+                  </Meta>
+                )}
+                {/* message_id is deliberately not shown. It is always NULL:
+                    the assistant message is written after the call returns, so
+                    publishing its id would race the worker into a foreign-key
+                    violation (see Known limitations in the README). A row reading
+                    "none" on every single call is noise pretending to be data. */}
+              </Group>
+            </div>
 
             {row.error_message && (
               <p className="calls__error" role="alert">
@@ -185,6 +241,15 @@ function Row({
   );
 }
 
+function Group({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="calls__group">
+      <h3 className="calls__grouptitle">{title}</h3>
+      <dl className="calls__meta">{children}</dl>
+    </section>
+  );
+}
+
 function Meta({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="calls__metaitem">
@@ -192,6 +257,27 @@ function Meta({ label, children }: { label: string; children: React.ReactNode })
       <dd>{children}</dd>
     </div>
   );
+}
+
+/** Output tokens per second of *generation*, excluding the wait for first token. */
+function tokensPerSecond(row: LogRow): string {
+  const { output_tokens: out, latency_ms: total, ttft_ms: ttft } = row;
+  if (!out || total === null || ttft === null) return "—";
+  const generating = (total - ttft) / 1000;
+  if (generating <= 0.05) return "—"; // too short to divide by meaningfully
+  return `${(out / generating).toFixed(1)} tok/s`;
+}
+
+function total(row: LogRow): string {
+  if (row.input_tokens === null && row.output_tokens === null) return "—";
+  return String((row.input_tokens ?? 0) + (row.output_tokens ?? 0));
+}
+
+/** How long this row waited between the model finishing and the worker writing it. */
+function lag(row: LogRow): string {
+  const delta = new Date(row.ingested_at).getTime() - new Date(row.completed_at).getTime();
+  if (Number.isNaN(delta)) return "—";
+  return delta < 1000 ? `${Math.max(0, Math.round(delta))} ms` : `${(delta / 1000).toFixed(1)} s`;
 }
 
 function Preview({ label, text }: { label: string; text: string | null }) {

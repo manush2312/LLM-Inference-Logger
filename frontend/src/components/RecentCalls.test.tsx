@@ -15,12 +15,14 @@ import { RecentCalls } from "./RecentCalls";
 const ROW = {
   id: "11111111-1111-1111-1111-111111111111",
   conversation_id: "22222222-2222-2222-2222-222222222222",
+  message_id: "33333333-3333-3333-3333-333333333333",
   provider: "groq",
   model: "openai/gpt-oss-20b",
   status: "success",
   streamed: true,
   started_at: new Date().toISOString(),
   completed_at: new Date().toISOString(),
+  ingested_at: new Date().toISOString(),
   latency_ms: 1054,
   ttft_ms: 430,
   input_tokens: 78,
@@ -30,6 +32,7 @@ const ROW = {
   error_message: null,
   input_preview: "My email is [REDACTED_EMAIL]",
   output_preview: "Hello, what's up?",
+  raw_metadata: { reasoning_tokens: 26, provider_request_id: "chatcmpl-abc123" },
 };
 
 function mockFetch(page: Record<string, unknown>) {
@@ -73,6 +76,35 @@ describe("recent calls", () => {
 
     expect(await screen.findByText(/REDACTED_EMAIL/)).toBeInTheDocument();
     expect(screen.getByText("stop")).toBeInTheDocument();
+  });
+
+  it("surfaces reasoning tokens and the provider request id", async () => {
+    // Both live in raw_metadata and were being discarded at the API edge.
+    // reasoning_tokens is the only thing that explains a short answer reporting
+    // hundreds of output tokens; provider_request_id is what a vendor's support
+    // asks for.
+    mockFetch({ items: [ROW], next_before: null, next_before_id: null });
+    renderCalls();
+
+    fireEvent.click(await screen.findByRole("button", { expanded: false }));
+
+    expect(await screen.findByText("26")).toBeInTheDocument();
+    expect(screen.getByText("chatcmpl-abc123")).toBeInTheDocument();
+    // Derived, not served: generation speed excludes the wait for first token.
+    expect(screen.getByText(/tok\/s/)).toBeInTheDocument();
+  });
+
+  it("does not crash when the API omits raw_metadata", async () => {
+    // The rolling-deploy case: a new bundle served while an old pod still
+    // answers. Reaching into an absent object took down the whole dashboard, not
+    // just the row.
+    const { raw_metadata: _omitted, ...withoutMeta } = ROW;
+    mockFetch({ items: [withoutMeta], next_before: null, next_before_id: null });
+    renderCalls();
+
+    fireEvent.click(await screen.findByRole("button", { expanded: false }));
+
+    expect(await screen.findByText(/REDACTED_EMAIL/)).toBeInTheDocument();
   });
 
   it("sends the compound cursor when loading older pages", async () => {

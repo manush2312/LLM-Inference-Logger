@@ -11,7 +11,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
@@ -202,12 +202,20 @@ class LogRowOut(BaseModel):
 
     id: str
     conversation_id: str | None
+    #: The assistant message this call produced, when it produced one. Absent for
+    #: errors and cancellations -- which is itself worth seeing.
+    message_id: str | None
     provider: str
     model: str
     status: str
     streamed: bool
     started_at: datetime
     completed_at: datetime
+    #: The third timestamp. `completed_at` is when the model finished;
+    #: `ingested_at` is when the worker wrote the row, and the gap between them is
+    #: this call's own ingestion lag. The dashboard reports that lag in aggregate;
+    #: per row it shows whether *this* record was delayed.
+    ingested_at: datetime
     latency_ms: int | None
     ttft_ms: int | None
     input_tokens: int | None
@@ -217,6 +225,12 @@ class LogRowOut(BaseModel):
     error_message: str | None
     input_preview: str | None
     output_preview: str | None
+    #: Vendor-specific detail kept because it is worth having and not worth a
+    #: column each. In practice: `provider_request_id`, which is the identifier a
+    #: vendor's support will ask for, and `reasoning_tokens`, which is the only
+    #: thing that explains a 3-word answer reporting 451 output tokens on a
+    #: reasoning model. Both were being captured and thrown away at the API edge.
+    raw_metadata: dict[str, Any]
 
 
 class LogPage(BaseModel):
@@ -260,12 +274,14 @@ async def recent_logs(
         LogRowOut(
             id=str(log.id),
             conversation_id=str(log.conversation_id) if log.conversation_id else None,
+            message_id=str(log.message_id) if log.message_id else None,
             provider=log.provider,
             model=log.model,
             status=log.status.value,
             streamed=log.streamed,
             started_at=log.started_at,
             completed_at=log.completed_at,
+            ingested_at=log.ingested_at,
             latency_ms=log.latency_ms,
             ttft_ms=log.ttft_ms,
             input_tokens=log.input_tokens,
@@ -275,6 +291,7 @@ async def recent_logs(
             error_message=log.error_message,
             input_preview=log.input_preview,
             output_preview=log.output_preview,
+            raw_metadata=log.raw_metadata or {},
         )
         for log in rows
     ]

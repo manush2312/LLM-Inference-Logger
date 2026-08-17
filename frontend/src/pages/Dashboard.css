@@ -314,21 +314,59 @@
   padding: 14px 11px 18px;
   background: var(--bg);
 }
+/* Four groups across, wrapping. Timing, cost and identity answer different
+   questions, and a flat run of ten label/value pairs made the reader scan all of
+   them to find any one. */
+.calls__groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px 26px;
+  margin-bottom: 14px;
+}
+.calls__grouptitle {
+  margin: 0 0 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
 .calls__meta {
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 28px;
-  margin: 0 0 12px;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0;
+}
+/* Label left, value right on one line: the values are what get compared between
+   rows, so they need a common edge to sit against. */
+.calls__metaitem {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.calls__metaitem dd {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.calls__metaitem code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.74rem;
+  /* Identifiers are long and must not force the grid wider than its column. */
+  overflow-wrap: anywhere;
 }
 .calls__metaitem dt {
+  flex-shrink: 0;
   font-size: 0.72rem;
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--text-muted);
 }
 .calls__metaitem dd {
-  margin: 2px 0 0;
-  font-size: 0.86rem;
+  margin: 0;
+  font-size: 0.84rem;
 }
 .calls__error {
   margin: 0 0 12px;

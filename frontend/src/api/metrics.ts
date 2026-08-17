@@ -61,12 +61,14 @@ export interface MetricsSummary {
 export interface LogRow {
   id: string;
   conversation_id: string | null;
+  message_id: string | null;
   provider: string;
   model: string;
   status: string;
   streamed: boolean;
   started_at: string;
   completed_at: string;
+  ingested_at: string;
   latency_ms: number | null;
   ttft_ms: number | null;
   input_tokens: number | null;
@@ -76,6 +78,7 @@ export interface LogRow {
   error_message: string | null;
   input_preview: string | null;
   output_preview: string | null;
+  raw_metadata: Record<string, unknown>;
 }
 
 export interface LogPage {
@@ -96,6 +99,7 @@ export interface ErrorLog {
   error_message: string | null;
   input_preview: string | null;
   output_preview: string | null;
+  raw_metadata: Record<string, unknown>;
 }
 
 async function get<T>(path: string): Promise<T> {
