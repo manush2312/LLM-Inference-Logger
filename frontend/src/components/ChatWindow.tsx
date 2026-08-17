@@ -59,24 +59,42 @@ export function ChatWindow() {
 
   async function handleSend(content: string) {
     const picked = parseSelection();
-    const id = await stream.send({
-      content,
-      conversationId,
-      // Both, or neither. Sending a model without its provider is what caused
-      // the mis-routing.
-      provider: picked.provider,
-      model: picked.model,
-    });
 
-    if (!conversationId && id) {
-      navigate(`/c/${id}`, { replace: true });
-    }
+    await stream.send(
+      {
+        content,
+        conversationId,
+        // Both, or neither. Sending a model without its provider is what caused
+        // the mis-routing.
+        provider: picked.provider,
+        model: picked.model,
+      },
+      // Moved onto the conversation's URL as soon as the server names it,
+      // rather than after the stream finishes. Waiting meant the transcript
+      // query had nothing to point at for the whole generation, so the reply
+      // could not be shown as it arrived.
+      (id) => {
+        if (!conversationId) {
+          navigate(`/c/${id}`, { replace: true });
+        }
+      },
+    );
   }
 
   // While streaming, the accumulated text is shown as a provisional bubble.
   // Once the server confirms, the refetched transcript replaces it -- so the
   // rendered conversation is always the persisted one, never a local guess.
   const showProvisional = stream.isStreaming && stream.text.length > 0;
+
+  // Echo the just-sent message until the server transcript contains it.
+  //
+  // Derived rather than stored, so there is no flag to clear and no window
+  // where both copies render. If the refetch has already landed, the real
+  // message is on screen and the echo suppresses itself.
+  const lastUserMessage = [...messages].reverse().find((m) => m.role === "user");
+  const showPendingUser =
+    stream.pendingUserContent !== null &&
+    lastUserMessage?.content !== stream.pendingUserContent;
 
   return (
     <section className="chat">
@@ -152,7 +170,7 @@ export function ChatWindow() {
       <div className="chat__transcript" ref={transcriptRef}>
         {isLoading && <p className="chat__hint">Loading conversation…</p>}
 
-        {!isLoading && messages.length === 0 && !showProvisional && (
+        {!isLoading && messages.length === 0 && !showProvisional && !showPendingUser && (
           <p className="chat__hint">
             Send a message to begin. Replies stream token by token and report which
             turn they are, so multi-turn context is visible rather than assumed.
@@ -162,6 +180,13 @@ export function ChatWindow() {
         {messages.map((message) => (
           <MessageBubble key={message.id} message={message} />
         ))}
+
+        {showPendingUser && (
+          <article className="bubble bubble--user">
+            <header className="bubble__role">user</header>
+            <div className="bubble__content">{stream.pendingUserContent}</div>
+          </article>
+        )}
 
         {showProvisional && (
           <article className="bubble bubble--assistant bubble--streaming">

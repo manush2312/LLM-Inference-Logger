@@ -14,6 +14,15 @@ import { streamMessage, type StreamInput } from "../api/stream";
 import { queryKeys } from "./useChat";
 
 export interface StreamingState {
+  /**
+   * The message the user just sent, echoed back for immediate display.
+   *
+   * Without this the transcript renders only server state, and the composer
+   * clears the input the moment you hit Send — so your own message vanishes
+   * until the reply finishes and the query refetches. On a slow model that is
+   * seconds of staring at an empty screen wondering whether anything happened.
+   */
+  pendingUserContent: string | null;
   /** Text accumulated so far, rendered as a provisional assistant bubble. */
   text: string;
   isStreaming: boolean;
@@ -25,6 +34,7 @@ export interface StreamingState {
 }
 
 const IDLE: StreamingState = {
+  pendingUserContent: null,
   text: "",
   isStreaming: false,
   ttftMs: null,
@@ -43,11 +53,13 @@ export function useStreamingChat() {
   }, []);
 
   const send = useCallback(
-    async (input: StreamInput): Promise<string | undefined> => {
+    async (input: StreamInput, onConversationId?: (id: string) => void) => {
       const controller = new AbortController();
       controllerRef.current = controller;
 
-      setState({ ...IDLE, isStreaming: true });
+      // Echoed before the request is even sent, so the message appears the
+      // instant the user hits Send rather than a round trip later.
+      setState({ ...IDLE, isStreaming: true, pendingUserContent: input.content });
 
       let conversationId: string | undefined = input.conversationId;
 
@@ -57,6 +69,17 @@ export function useStreamingChat() {
           {
             onStart: (info) => {
               conversationId = info.conversation_id;
+
+              // Reported as soon as the server names it, not after the stream
+              // finishes -- that is what lets the caller point its transcript
+              // query at the right conversation while tokens are still
+              // arriving. The user's message is already committed by now: the
+              // service writes it in its own transaction *before* calling the
+              // provider, so a refetch here genuinely returns it.
+              onConversationId?.(info.conversation_id);
+              void queryClient.invalidateQueries({
+                queryKey: queryKeys.conversation(info.conversation_id),
+              });
             },
             onTimeToFirstToken: (ttftMs) =>
               setState((previous) => ({ ...previous, ttftMs })),
@@ -106,7 +129,6 @@ export function useStreamingChat() {
         void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
       }
 
-      return conversationId;
     },
     [queryClient],
   );

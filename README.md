@@ -327,6 +327,22 @@ Smaller, but the same theme — each was invisible until something ran:
 - **`capabilities: drop: ["ALL"]` broke nginx**, whose entrypoint needs
   `CAP_CHOWN`. Fixed by switching to the unprivileged image rather than
   loosening the security context to suit the base image.
+- **Your own message vanished while waiting for the reply.** Three innocuous
+  decisions combined into it: the composer clears the input on send, the
+  transcript renders only server state, and the transcript query was invalidated
+  in a `finally` — so between pressing Send and the reply finishing, the message
+  existed nowhere on screen. On a slow model that is seconds of staring at an
+  empty panel wondering whether anything happened.
+
+  Fixed on both sides of the seam. The message is echoed locally the instant
+  it is sent, and the conversation id is now reported at the `start` frame
+  rather than after the stream ends — so the transcript query can point at the
+  right conversation while tokens are still arriving. That second half works
+  *because* of the two-transaction design: the user turn is committed before the
+  provider is called, so a mid-stream refetch genuinely returns it. Verified by
+  querying the transcript after four tokens had streamed and finding `seq=0`
+  already present. The echo is derived rather than stored — if the refetch has
+  landed, it suppresses itself, so there is no window where both copies render.
 - **A stale browser tab produced an unexplained `network_error`.** A page left
   open on `/c/<id>` whose conversation had since been deleted got a dead socket
   and no message. The cause was structural: validation ran *inside* the response
