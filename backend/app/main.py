@@ -19,6 +19,7 @@ from app.api import health
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger
+from app.db.session import Database
 
 log = get_logger(__name__)
 
@@ -33,9 +34,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     log.info("startup", env=settings.app_env, bus=settings.event_bus_backend)
 
-    yield
+    app.state.database = Database(settings)
 
-    log.info("shutdown")
+    try:
+        yield
+    finally:
+        # Release in reverse acquisition order, and in a `finally` so a crash
+        # during startup of a later resource still closes the earlier ones.
+        await app.state.database.dispose()
+        log.info("shutdown")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

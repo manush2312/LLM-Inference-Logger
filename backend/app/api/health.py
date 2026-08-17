@@ -14,8 +14,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
+
+from app.api.deps import get_database
+from app.db.session import Database
 
 router = APIRouter(tags=["health"])
 
@@ -35,8 +38,14 @@ async def liveness() -> LivenessResponse:
 
 
 @router.get("/readyz", response_model=ReadinessResponse)
-async def readiness() -> ReadinessResponse:
-    """Dependency checks are registered here as later phases add them."""
-    checks: dict[str, str] = {}
+async def readiness(
+    response: Response,
+    database: Database = Depends(get_database),
+) -> ReadinessResponse:
+    checks = {"database": "ok" if await database.check() else "unreachable"}
+
     healthy = all(result == "ok" for result in checks.values())
+    # A 503 is what actually removes the pod from the load-balancer pool; a
+    # 200 body saying "degraded" would be ignored by every orchestrator.
+    response.status_code = 200 if healthy else 503
     return ReadinessResponse(status="ready" if healthy else "degraded", checks=checks)

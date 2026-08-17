@@ -99,15 +99,6 @@ class Settings(BaseSettings):
 
     @computed_field  # type: ignore[prop-decorator]
     @property
-    def database_url_sync(self) -> str:
-        """Sync DSN, used only by Alembic which has no async story worth the cost."""
-        return (
-            f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
     def redis_url(self) -> str:
         return f"redis://{self.redis_host}:{self.redis_port}/0"
 
