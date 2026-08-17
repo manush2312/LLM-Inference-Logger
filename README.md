@@ -527,6 +527,12 @@ Stated rather than hidden.
 - **Worker HPA scales on CPU**, which is a poor proxy. The right signal is Redis
   stream depth, which needs KEDA or a Prometheus adapter. Noted in the manifest
   rather than faked.
+- **Neither HPA can actually scale on kind**, and the manifests are not why:
+  `kubectl get hpa` reports `cpu: <unknown>` because kind ships no
+  metrics-server, so there is nothing publishing pod CPU. The HPA objects are
+  correct and would scale on any cluster that has one -- installing it here
+  would verify the local path, but it is a cluster add-on rather than part of
+  this deployment, so it is called out instead of quietly added.
 - **No authentication.** Single-user demo.
 - **`ConversationStatus.CANCELLED` is unused.** Cancellation is recorded on the
   inference log, where it belongs; the enum value is reserved.

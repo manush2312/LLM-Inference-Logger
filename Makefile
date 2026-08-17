@@ -166,9 +166,11 @@ KIND_CLUSTER := llm-logger
 # path for refreshing it, and it caches into the same place.
 INGRESS_VERSION := controller-v1.11.3
 INGRESS_URL := https://raw.githubusercontent.com/kubernetes/ingress-nginx/$(INGRESS_VERSION)/deploy/static/provider/kind/deploy.yaml
-INGRESS_VENDORED := $(K8S)/vendor/ingress-nginx-$(INGRESS_VERSION).yaml
 KCTX := --context kind-$(KIND_CLUSTER)
 K8S := infra/k8s
+# Declared after K8S, not before: `:=` expands immediately, so referencing
+# $(K8S) above its definition silently yields a path with an empty prefix.
+INGRESS_VENDORED := $(K8S)/vendor/ingress-nginx-$(INGRESS_VERSION).yaml
 
 .PHONY: kind-up
 kind-up: ## Create the local cluster and install an ingress controller
