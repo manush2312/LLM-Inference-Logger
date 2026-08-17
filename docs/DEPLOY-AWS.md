@@ -291,11 +291,105 @@ For the next stage:
 
 ---
 
-## What comes next
+## Step 12 — Publish the images
 
-Application deployment — the Ollama Deployment and volume, image publishing to
-GHCR, TLS via cert-manager, the basic-auth gate, and secrets created on the server
-rather than committed. Those manifests are tracked separately from this runbook.
+The cluster pulls from GHCR, so the images must exist before you deploy. Pushing to
+`main` triggers `.github/workflows/images.yml`, which builds both and publishes
+them.
+
+Watch it under the repository's **Actions** tab. Then make the two packages
+**public** (repository → Packages → each package → Package settings → Change
+visibility), otherwise the cluster gets a 401 pulling them and the pods sit in
+`ImagePullBackOff`.
+
+Confirm they are pullable without credentials:
+
+```bash
+sudo k3s ctr images pull ghcr.io/manush2312/llm-inference-logger-backend:main
+sudo k3s ctr images pull ghcr.io/manush2312/llm-inference-logger-frontend:main
+```
+
+## Step 13 — Install cert-manager
+
+This issues and renews the TLS certificate.
+
+```bash
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
+kubectl -n cert-manager rollout status deploy/cert-manager --timeout=180s
+kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=180s
+```
+
+Wait for the **webhook** specifically. Applying a `ClusterIssuer` before it is
+serving fails with a connection-refused error that reads like a broken manifest.
+
+## Step 14 — Create the secrets
+
+These are created once, by hand, and no `apply` ever overwrites them — the overlay
+deliberately removes the base's placeholder Secret for exactly this reason.
+
+```bash
+kubectl create namespace llm-logger --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl -n llm-logger create secret generic app-secrets \
+  --from-literal=POSTGRES_USER=llm \
+  --from-literal=POSTGRES_PASSWORD="$(openssl rand -base64 24)" \
+  --from-literal=REDIS_PASSWORD="$(openssl rand -base64 24)" \
+  --from-literal=GROQ_API_KEY="your-groq-key" \
+  --from-literal=GEMINI_API_KEY="your-gemini-key" \
+  --from-literal=ANTHROPIC_API_KEY="" \
+  --from-literal=OPENAI_API_KEY=""
+```
+
+The generated passwords are never printed. Nothing needs to read them back — the
+pods get them from the Secret — but if you ever want them:
+
+```bash
+kubectl -n llm-logger get secret app-secrets -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d
+```
+
+> Changing `POSTGRES_PASSWORD` after Postgres has initialised does **not** change
+> the database's password — it is set only on first boot, from an empty data
+> directory. Rotating it means either an `ALTER USER` inside Postgres or deleting
+> the PVC and starting over.
+
+## Step 15 — Configure the hostname and deploy
+
+```bash
+cd ~/llm-inference-logger
+./infra/k8s-aws/configure.sh YOUR_HOSTNAME your@email.com
+kubectl apply -k infra/k8s-aws
+```
+
+Then watch it come up:
+
+```bash
+kubectl -n llm-logger get pods -w
+```
+
+Expect this order: `migrate` runs to `Completed`, then `postgres` and `redis` go
+`Running`, then `backend`, `worker` and `frontend`. `ollama` starts quickly but
+`ollama-pull` takes several minutes downloading the model — the site works before
+it finishes, just without the Ollama provider.
+
+```bash
+kubectl -n llm-logger logs job/ollama-pull -f      # download progress
+kubectl get certificate -n llm-logger              # READY should become True
+```
+
+The certificate usually takes 1–3 minutes. If it stays `False`:
+
+```bash
+kubectl -n llm-logger describe certificate llm-logger-tls
+kubectl -n llm-logger get challenge
+```
+
+The usual causes are DNS not yet resolving to this host, or port 80 unreachable —
+Let's Encrypt validates over HTTP before it will issue.
+
+> If issuance fails repeatedly, switch the Ingress annotation to
+> `letsencrypt-staging`, get it working there, then switch back. Production
+> Let's Encrypt allows only 5 failures per hostname per week, and once that is
+> exhausted there is nothing to do but wait for the window to roll.
 
 ## Verification checklist
 
