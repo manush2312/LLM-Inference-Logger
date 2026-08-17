@@ -1,0 +1,51 @@
+# Local development stack.
+#
+# Milestone 0 brings up only the stateful backing services, so the API and
+# worker can be run on the host with fast reload. The full five-service stack
+# (frontend, backend, worker, redis, postgres) lands in M5; these two service
+# definitions carry over unchanged.
+#
+#   docker compose -f infra/docker-compose.yml up -d
+#
+name: llm-inference-logger
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-llm}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-llm}
+      POSTGRES_DB: ${POSTGRES_DB:-llm_logger}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # Depending services wait on this, so "container started" never gets
+      # mistaken for "database accepting connections".
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-llm} -d ${POSTGRES_DB:-llm_logger}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF on: the event stream is the buffer protecting us from Postgres
+    # outages, so it should survive a Redis restart too.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redis_data:
