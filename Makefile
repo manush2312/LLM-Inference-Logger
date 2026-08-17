@@ -112,3 +112,85 @@ downgrade: ## Roll back one migration
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+
+# ---------------------------------------------------------------------------
+# Full stack
+# ---------------------------------------------------------------------------
+.PHONY: up
+up: .env ## Build and run all five services
+	$(COMPOSE) up --build -d
+	@echo "frontend  http://localhost:5173"
+	@echo "api docs  http://localhost:8000/docs"
+
+.PHONY: down
+down: ## Stop all services (keeps volumes)
+	$(COMPOSE) down
+
+.PHONY: logs
+logs: ## Tail logs from every service
+	$(COMPOSE) logs -f
+
+.PHONY: ps
+ps: ## Show service status
+	$(COMPOSE) ps
+
+# ---------------------------------------------------------------------------
+# Kubernetes (local, via kind)
+#
+# KCTX is passed to EVERY kubectl call below. A developer's active context is
+# often a real cluster; pinning it here means an unqualified apply can never
+# reach one by accident.
+# ---------------------------------------------------------------------------
+KIND_CLUSTER := llm-logger
+KCTX := --context kind-$(KIND_CLUSTER)
+K8S := infra/k8s
+
+.PHONY: kind-up
+kind-up: ## Create the local cluster and install an ingress controller
+	kind create cluster --config $(K8S)/kind-cluster.yaml
+	kubectl $(KCTX) apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+	kubectl $(KCTX) -n ingress-nginx wait --for=condition=available deploy/ingress-nginx-controller --timeout=180s
+# `deployment available` is not the same as `admission webhook serving`:
+# applying an Ingress in that gap fails with a connection-refused webhook error.
+# Poll the admission endpoint until it actually has an address -- `kubectl wait
+# --selector` is no good here, it errors out immediately when nothing matches yet.
+	@for i in $$(seq 1 60); do \
+		addrs=$$(kubectl $(KCTX) -n ingress-nginx get endpointslices \
+			-l kubernetes.io/service-name=ingress-nginx-controller-admission \
+			-o jsonpath='{.items[*].endpoints[*].addresses[*]}' 2>/dev/null); \
+		if [ -n "$$addrs" ]; then echo "admission webhook ready at $$addrs"; break; fi; \
+		sleep 2; \
+	done
+
+.PHONY: kind-load
+kind-load: ## Build both images and load them into the cluster
+	docker build -t llm-inference-logger-backend:dev ./backend
+	docker build -t llm-inference-logger-frontend:dev ./frontend
+	kind load docker-image llm-inference-logger-backend:dev --name $(KIND_CLUSTER)
+	kind load docker-image llm-inference-logger-frontend:dev --name $(KIND_CLUSTER)
+
+.PHONY: k8s-apply
+k8s-apply: ## Apply the manifests to the local cluster
+# Retried once: even after the ingress controller pod reports ready, kube-proxy
+# may not have programmed the route to its admission webhook yet, and the
+# Ingress apply fails with connection-refused. Observed, not hypothetical.
+	kubectl $(KCTX) apply -k $(K8S) || (sleep 20 && kubectl $(KCTX) apply -k $(K8S))
+	kubectl $(KCTX) -n llm-logger rollout status deploy/backend --timeout=180s
+	kubectl $(KCTX) -n llm-logger rollout status deploy/worker --timeout=180s
+	kubectl $(KCTX) -n llm-logger rollout status deploy/frontend --timeout=180s
+	@echo "app: http://localhost:8080"
+
+.PHONY: k8s-status
+k8s-status: ## Show what is running in the cluster
+	kubectl $(KCTX) -n llm-logger get pods,svc,ingress,hpa
+
+.PHONY: k8s-logs
+k8s-logs: ## Tail worker logs
+	kubectl $(KCTX) -n llm-logger logs -l app=worker -f --tail=50
+
+.PHONY: k8s-deploy
+k8s-deploy: kind-up kind-load k8s-apply ## Full local Kubernetes run, from nothing
+
+.PHONY: kind-down
+kind-down: ## Delete the local cluster
+	kind delete cluster --name $(KIND_CLUSTER)

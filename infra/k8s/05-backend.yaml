@@ -1,0 +1,108 @@
+# The chat API. Latency-sensitive, so it scales on demand and is deliberately
+# separate from the write-heavy worker -- ingestion bursts must never compete
+# with a user waiting on a first token.
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: llm-logger
+spec:
+  selector:
+    app: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: llm-logger
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  strategy:
+    rollingUpdate:
+      maxSurge: 1
+      # Never drop below the current replica count during a rollout: chat is
+      # user-facing, so a deploy should not reduce capacity.
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      # Long enough for in-flight SSE streams to finish and for the shutdown
+      # drain of pending publish tasks to complete. The default 30s would cut
+      # a long generation off mid-reply.
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: backend
+          image: llm-inference-logger-backend:dev
+          imagePullPolicy: IfNotPresent
+          command: ["llm-api"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef: { name: app-config }
+            - secretRef: { name: app-secrets }
+          # Liveness deliberately has no dependency checks. If it probed
+          # Postgres, a database blip would restart every API pod at once and
+          # turn a recoverable dependency failure into a total outage.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          # Readiness does check dependencies -- failing it only removes the pod
+          # from the Service's endpoints, which is the correct response to
+          # "cannot serve right now".
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 2
+          # Startup probe so a slow first boot does not trip liveness and
+          # restart the pod before it has finished starting.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+            failureThreshold: 20
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 768Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+  namespace: llm-logger
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Slow to scale down: streaming responses are long-lived, and aggressive
+      # scale-down would keep terminating pods that are mid-generation.
+      stabilizationWindowSeconds: 300

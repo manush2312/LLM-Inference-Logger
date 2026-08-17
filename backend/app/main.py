@@ -15,13 +15,14 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import chat, conversations, health
+from app.api import chat, conversations, health, metrics
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger
 from app.db.session import Database
 from app.events.factory import create_event_bus
 from app.instrumentation.redaction import Redactor
+from app.instrumentation.wrapper import drain_pending_publishes
 from app.providers.registry import ProviderRegistry
 
 log = get_logger(__name__)
@@ -51,6 +52,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     finally:
         # Release in reverse acquisition order, and in a `finally` so a crash
         # during startup of a later resource still closes the earlier ones.
+        # Before closing the bus: a shielded publish still in flight needs a
+        # live client to finish on.
+        await drain_pending_publishes()
         await app.state.event_bus.close()
         await app.state.database.dispose()
         log.info("shutdown")
@@ -84,6 +88,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(health.router)
     app.include_router(conversations.router)
     app.include_router(chat.router)
+    app.include_router(metrics.router)
 
     return app
 

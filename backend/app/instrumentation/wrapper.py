@@ -16,6 +16,7 @@ stream would read as "no traffic" rather than "something went wrong".
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -143,9 +144,44 @@ class InstrumentedProvider(BaseProvider):
             await _publish_resiliently(self._bus, event)
 
 
-#: Publish tasks that outlived the caller which started them. Held only to keep
-#: the event loop from garbage-collecting a task that is still running.
+#: Publish tasks that outlived the caller which started them. Held both to keep
+#: the event loop from garbage-collecting a running task, and so shutdown can
+#: wait for them -- see `drain_pending_publishes`.
 _INFLIGHT: set[asyncio.Task[bool]] = set()
+
+
+async def drain_pending_publishes(grace_seconds: float = 2.0) -> int:
+    """Wait for in-flight publishes during shutdown. Returns how many were lost.
+
+    `asyncio.shield` protects a publish from its *caller* being cancelled. It
+    does nothing about the process exiting: a rolling deploy sends SIGTERM, the
+    event loop closes, and any shielded task still in flight is dropped without
+    a trace. That is the same failure class as the double-cancel bug --
+    telemetry disappearing silently -- just triggered by pod termination rather
+    than a client hanging up.
+
+    Bounded, because shutdown must not hang: a Redis that is already gone would
+    otherwise hold the pod open until Kubernetes escalates to SIGKILL, which
+    loses the events anyway *and* makes the deploy slower.
+    """
+    pending = {task for task in _INFLIGHT if not task.done()}
+    if not pending:
+        return 0
+
+    log.info("draining_pending_publishes", count=len(pending))
+
+    with contextlib.suppress(TimeoutError):
+        async with asyncio.timeout(grace_seconds):
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    still_pending = {task for task in pending if not task.done()}
+
+    if still_pending:
+        # Reported rather than swallowed: if this is ever non-zero in
+        # production, the shutdown budget is too tight for the bus's latency.
+        log.warning("publishes_dropped_at_shutdown", count=len(still_pending))
+
+    return len(still_pending)
 
 
 async def _publish_resiliently(bus: EventBus, event: InferenceEvent) -> None:
@@ -207,9 +243,19 @@ def _classify(exc: BaseException) -> tuple[InferenceStatus, str | None, str]:
     that noise.
     """
     # Both shapes of "the caller went away". `CancelledError` is an explicit
-    # task cancel; `GeneratorExit` is what Starlette throws when it closes a
-    # response generator because the client disconnected. Treating the latter
-    # as an error would file every closed browser tab as a provider failure.
+    # task cancel; `GeneratorExit` arrives when the response generator is
+    # closed. Treating the latter as an error would file every closed browser
+    # tab as a provider failure.
+    #
+    # KNOWN COUPLING: the `GeneratorExit` path depends on Starlette calling
+    # `aclose()` on the response generator when a client disconnects. That is
+    # observed implementation behaviour, not a documented ASGI guarantee -- and
+    # it is the path that actually fires in practice, ahead of our own
+    # `is_disconnected()` watcher. If a future Starlette signals disconnects
+    # differently, cancelled calls would start being logged as errors. The test
+    # `test_generator_close_is_recorded_as_cancelled` locks this branch
+    # specifically so that change surfaces as a failure rather than as a slow
+    # drift in the dashboard.
     if isinstance(exc, asyncio.CancelledError | GeneratorExit):
         return InferenceStatus.CANCELLED, None, "Cancelled by client"
 

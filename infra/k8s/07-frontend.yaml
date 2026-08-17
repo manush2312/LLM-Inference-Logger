@@ -1,0 +1,85 @@
+# Static bundle served by nginx, which also proxies the API paths -- so the
+# browser stays on one origin exactly as it does in compose, and CORS remains a
+# development-only concern.
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: llm-logger
+spec:
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: llm-logger
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: llm-inference-logger-frontend:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          livenessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: { path: /, port: http }
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            runAsUser: 101
+            capabilities: { drop: ["ALL"] }
+            # Root filesystem left writable: nginx writes its pid and proxy
+            # temp files. Making it read-only means mounting emptyDirs over
+            # /tmp and /var/cache/nginx -- worth doing, but noted rather than
+            # half-applied.
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llm-logger
+  namespace: llm-logger
+  annotations:
+    # SSE again: without buffering disabled the ingress holds the whole stream
+    # and delivers it in one lump at the end. The stream "works" and yet nothing
+    # streams -- a genuinely confusing thing to debug from the browser.
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          # Everything through the frontend, which proxies API paths onward.
+          # One origin, one place that knows the routing.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80

@@ -1,0 +1,250 @@
+/*
+ * Chart tokens.
+ *
+ * Series slots and status roles are named by the job they do, not by hue, so a
+ * palette swap is one edit here rather than a hunt through chart code. Values
+ * are the validated dark steps -- checked against this app's own surface
+ * (#171a21), not a reference surface.
+ */
+.dash {
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+
+  --status-good: #0ca30c;
+  --status-warning: #fab219;
+  --status-critical: #d03b3b;
+
+  --grid: #2c2c2a;
+  --axis: #383835;
+
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.dash__header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.dash__title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+/* Filters in a single row above the charts. */
+.dash__filters {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.chip {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.82rem;
+}
+
+.chip--active {
+  border-color: transparent;
+  background: var(--series-1);
+  color: #fff;
+}
+
+/* --- Stat tiles --------------------------------------------------------- */
+
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.tile__label {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* Figures stay in the system sans and use tabular numerals so digits do not
+   jitter horizontally as values update. */
+.tile__value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.tile__value--critical {
+  color: var(--status-critical);
+}
+
+/* --- Panels ------------------------------------------------------------- */
+
+.panel {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.panel__title {
+  display: block;
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.panel__unit {
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  gap: 18px;
+}
+
+/* --- Ingestion panel ---------------------------------------------------- */
+
+.ingestion__headline {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.ingestion__headline .panel__title {
+  margin: 0;
+}
+
+.ingestion--stalled {
+  border-color: var(--status-critical);
+}
+
+/* Icon plus label, so state never rests on colour alone. */
+.pill {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.pill--good {
+  background: rgb(12 163 12 / 15%);
+  color: var(--status-good);
+}
+
+.pill--critical {
+  background: rgb(208 59 59 / 15%);
+  color: var(--status-critical);
+}
+
+.pill--idle {
+  background: var(--surface-raised);
+  color: var(--text-muted);
+}
+
+.ingestion__stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.stat dt {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.stat dd {
+  margin: 2px 0 0;
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.stat--critical {
+  color: var(--status-critical);
+}
+
+/* --- Tables ------------------------------------------------------------- */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+
+.table th,
+.table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.table th {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.table__empty {
+  padding: 18px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.mono {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+.truncate {
+  max-width: 34ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Wide tables scroll inside their own panel rather than the page. */
+.panel:has(.table) {
+  overflow-x: auto;
+}

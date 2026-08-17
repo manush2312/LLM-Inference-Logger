@@ -1,0 +1,79 @@
+# Redis as a StatefulSet, not a Deployment.
+#
+# The stream is the buffer that keeps a Postgres outage from becoming data loss,
+# so it needs to survive a Redis restart -- which means AOF, which means a
+# volume, which means the same two-postmasters-on-one-volume hazard a Deployment
+# has. If the stream were treated as purely disposable a Deployment would be
+# fine; it is not, so this is a StatefulSet.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: llm-logger
+spec:
+  clusterIP: None
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: llm-logger
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --appendfsync
+            - everysec
+            # A hard memory ceiling with an explicit eviction policy: without
+            # one, a stalled worker grows the stream until the pod is OOM-killed
+            # by the kubelet. `noeviction` makes Redis reject writes instead,
+            # which the publisher already treats as "drop this event and carry
+            # on" -- a bounded, visible failure rather than a crash loop that
+            # also takes out the chat path.
+            - --maxmemory
+            - 512mb
+            - --maxmemory-policy
+            - noeviction
+          ports:
+            - containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 640Mi }
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 2Gi

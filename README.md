@@ -1,0 +1,415 @@
+# LLM Inference Logger
+
+Instrumentation, ingestion and observability for multi-provider LLM inference.
+
+A chat application that logs every model call — success, failure, or abandoned
+mid-stream — through an event pipeline into Postgres, and a dashboard that reads
+it back. Multi-provider (Anthropic, OpenAI) with a first-class mock provider, so
+**the whole system runs and demonstrates itself with no API keys and no network.**
+
+```bash
+git clone <repo> && cd llm-inference-logger
+make up          # five services, one command
+open http://localhost:5173
+```
+
+Then send a message. Try the `mock-error` model to populate the errors panel, or
+`mock-cancel` and press **Stop** to see a cancelled call recorded. Both are
+reachable from the UI on purpose — see [Why the mock provider is
+load-bearing](#why-the-mock-provider-is-load-bearing).
+
+---
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Architecture](#architecture)
+- [Running it](#running-it)
+- [Why the mock provider is load-bearing](#why-the-mock-provider-is-load-bearing)
+- [What broke and how I found it](#what-broke-and-how-i-found-it) ← the interesting part
+- [Design decisions and tradeoffs](#design-decisions-and-tradeoffs)
+- [Known limitations](#known-limitations)
+- [What I'd do with more time](#what-id-do-with-more-time)
+
+---
+
+## What it does
+
+| | |
+|---|---|
+| **Chat** | Multi-turn conversations, streamed token by token over SSE, resumable after a page refresh |
+| **Cancellation** | Stop a generation mid-stream; partial output is kept and the call is logged as `cancelled`, not as an error |
+| **Instrumentation** | One `inference_logs` row per model call, always — latency, TTFT, tokens, status, redacted previews |
+| **Ingestion** | Events published to Redis Streams, consumed by a separate worker, written idempotently |
+| **Dashboard** | Latency percentiles, throughput by outcome, error rate, per-provider breakdown, and ingestion-pipeline health |
+| **Providers** | Anthropic, OpenAI, and a deterministic mock. Adding a provider requires no changes to the instrumentation |
+
+---
+
+## Architecture
+
+```
+                    ┌──────────────┐
+  browser ──HTTP/SSE─▶   frontend   │  React + Vite, nginx (also proxies /api → one origin)
+                    └──────┬───────┘
+                           │
+                    ┌──────▼─────────────────────────────┐
+                    │            backend (FastAPI)        │
+                    │                                     │
+                    │  /chat  /chat/stream  /conversations │
+                    │  /metrics/summary  /metrics/errors   │
+                    │                                     │
+                    │  ┌───────────────────────────────┐  │
+                    │  │  InstrumentedProvider          │  │  ← the one seam
+                    │  │  wraps stream_chat; emits      │  │
+                    │  │  exactly one event per call    │  │
+                    │  └──────────────┬────────────────┘  │
+                    │  ┌──────────────▼────────────────┐  │
+                    │  │  ProviderRegistry              │  │
+                    │  │  anthropic · openai · mock     │  │
+                    │  └───────────────────────────────┘  │
+                    └──────┬──────────────────────┬───────┘
+                           │ EventBus (interface) │ SQL
+                    ┌──────▼───────┐              │
+                    │ Redis Streams │              │
+                    │ inference_logs│              │
+                    │  (+ :dlq)     │              │
+                    └──────┬────────┘              │
+                           │ XREADGROUP            │
+                    ┌──────▼──────────┐            │
+                    │ worker           │            │
+                    │ validate→persist │            │
+                    └──────┬───────────┘            │
+                    ┌──────▼────────────────────────▼───┐
+                    │             Postgres               │
+                    │ conversations · messages           │
+                    │ inference_logs · events_raw        │
+                    └────────────────────────────────────┘
+```
+
+The request path never blocks on logging. The wrapper publishes an event with a
+short timeout and moves on; a logging outage costs telemetry, not availability.
+
+**The wrapper is the whole design.** It wraps `stream_chat`, and non-streaming
+`complete()` is built on `stream_chat`, so both paths are instrumented by the
+same code. A `try/except/finally` means every terminal outcome converges on one
+`finally` — so "one call, one row" holds by construction rather than by
+remembering to log on each path. Adding a provider adds zero lines to it.
+
+More detail, including the layering rules and the data model: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+---
+
+## Running it
+
+### Docker Compose (recommended)
+
+```bash
+make up        # build + start postgres, redis, migrate, backend, worker, frontend
+make logs      # tail everything
+make down      # stop
+```
+
+- app → <http://localhost:5173>
+- API docs → <http://localhost:8000/docs>
+
+### Local development
+
+```bash
+make setup       # uv sync + npm install
+make infra-up    # postgres + redis only
+make migrate
+make api         # terminal 1
+make worker      # terminal 2
+make web         # terminal 3
+```
+
+### Kubernetes (local, via kind)
+
+```bash
+make k8s-deploy   # create cluster, build+load images, apply manifests
+make k8s-status
+open http://localhost:8080
+make kind-down
+```
+
+> Every Kubernetes target passes `--context kind-llm-logger` explicitly. A
+> developer's active context is frequently a real cluster, and an unqualified
+> `kubectl apply` would land there. The safe thing happens by default rather
+> than by remembering.
+
+### Quality gates
+
+```bash
+make check      # ruff + mypy --strict + unit tests
+make test-all   # adds integration tests (needs make infra-up)
+```
+
+109 tests. Unit tests need no Postgres, no Redis, and no API keys.
+
+### API keys (optional)
+
+Drop `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` into `.env` and restart. The registry
+picks them up at startup; providers without a key are simply not registered, so a
+missing key is a clear `400 provider_not_configured` at the API boundary rather
+than an authentication error thrown from inside a vendor SDK mid-stream.
+
+---
+
+## Why the mock provider is load-bearing
+
+It is not a test double. It is a real `BaseProvider` that the wrapper, the bus,
+the worker and the database cannot distinguish from Anthropic — and it does three
+jobs nothing else can:
+
+1. **A reviewer with no API key sees the system work.** Streaming, TTFT, token
+   accounting, errors, cancellation, and every dashboard panel populate on a
+   fresh clone. "Trust me it works" becomes "watch it work."
+2. **Failure paths become deterministic.** You cannot ask a real provider to fail
+   on demand. Without `mock-error`, the errors dashboard would ship untested and
+   demo against an empty table.
+3. **It makes multi-turn plumbing observable.** Replies report which turn they
+   are and how much history they received. A chat UI looks perfectly healthy
+   while silently dropping conversation history — every reply is fluent, it just
+   has amnesia. Reporting what the provider *actually received* turns that
+   invisible failure into an assertion.
+
+| Model | Behaviour |
+|---|---|
+| `mock` | Ordinary streamed reply |
+| `mock-instant` | No delays; used by the test suite |
+| `mock-slow` | Long pauses between tokens; for demonstrating latency |
+| `mock-error` | Fails *after* emitting output — a partial preview plus an error |
+| `mock-cancel` | **Never terminates on its own.** So a `cancelled` row from it can only have come from a real interruption |
+
+---
+
+## What broke and how I found it
+
+Every bug below was found by running the system and reading what actually
+happened — not by re-reading the design. They are here in specific detail
+because the specifics are the point.
+
+### 1. A single transaction made the most important log row unwritable
+
+**Symptom.** A chat turn originally ran inside one transaction with the provider
+call inside it. On a provider failure the transaction rolled back — correctly, so
+no orphaned user message. But that rollback also destroyed the conversation the
+event referenced, so the worker's insert would hit a foreign-key violation
+against a conversation that never committed.
+
+**Why it mattered.** The single most important row on an errors dashboard is the
+failure. The design made it the one row that *could not be written*.
+
+**The fix.** Split the turn into two transactions with the provider call between
+them. Committing the user turn first makes `conversation_id` durable *before* the
+call, so success, error and cancellation can all reference it safely.
+
+The FK problem and the lost-error-log problem turned out to be the same problem.
+It is also better behaviour: the user's message stays on screen when the model
+fails. The cost — a failed first message leaves a conversation with a user
+message and no reply — is visible, retryable, and covered by a test.
+
+### 2. Cancellation erased its own log entry
+
+**Symptom.** `asyncio.shield` and a bare `await` in the wrapper's `finally` both
+publish correctly under a single `cancel()`. Under a watcher that keeps polling
+after it has already cancelled, **zero events were published** — measured, not
+theorised.
+
+**Why.** `Task.cancel()` delivers `CancelledError` once and does not re-arm. But
+a second `cancel()` lands while the `finally` is mid-publish and kills it. The
+cancellation destroys the very record it was supposed to create — and silently,
+because a missing row looks exactly like no traffic.
+
+**The fix, in two independent layers.** The disconnect watcher returns
+immediately after cancelling, so the case does not arise. The publish runs in its
+own task behind `asyncio.shield`, so it does not matter if it ever does. A
+wrapper meant to be a stable seam must not depend on every future caller having
+correct cancellation discipline.
+
+A test asserts the watcher's poll count *stops growing* after it cancels, so the
+guard is pinned rather than trusted.
+
+### 3. `GeneratorExit`, not `CancelledError`
+
+**Symptom.** The wrapper caught `BaseException` (necessary — `CancelledError`
+does not inherit from `Exception`) and classified anything non-provider as an
+error. Live runs showed cancelled calls landing correctly as `cancelled`, but
+`client_disconnected` **never appeared in the logs**.
+
+**Why that absence mattered.** Starlette signals a disconnect by calling
+`aclose()` on the response generator, which raises `GeneratorExit` — not
+`CancelledError`. That is the path that actually fires in production, *ahead of*
+the `is_disconnected()` watcher. Classified as an error, every closed browser tab
+would have been filed as a provider failure.
+
+I found it by noticing something that wasn't in the logs, not by reading the
+disconnect-handling code and concluding it looked right.
+
+> **Known coupling.** This depends on Starlette implementation behaviour, not a
+> documented ASGI guarantee. A dedicated test locks `GeneratorExit → cancelled`
+> so a future Starlette change surfaces as a test failure rather than as a slow
+> drift in what the dashboard claims.
+
+### 4. A worker that was alive, healthy, and doing nothing
+
+**Symptom.** Found from a mistake in my own demo script: `redis-cli DEL
+inference_logs` also deletes the stream's consumer group. The worker then looped
+on `NOGROUP` forever — process running, liveness probe passing, ingesting
+absolutely nothing.
+
+**Why this one is a different species.** The other three were logic bugs. This
+was a *silent* outage: nothing crashed, nothing alerted, and every chat-path
+panel looked perfectly healthy. `ensure_group()` only ran at startup, so there
+was no recovery path. An eviction or a flushed database would do the same in
+production.
+
+**The fix, at two levels.** `poll()` recreates the group on `NOGROUP` and
+continues. And — the more important half — **ingestion lag is now a dashboard
+panel.** Lag is time since the last successful write, so it grows regardless of
+*why* ingestion stopped: a dead worker, an unreachable database, a consumer group
+that no longer exists. The failure mode was invisibility, so the fix is a
+measurement, not just a retry.
+
+### 5. Bugs the type checker and the tests could not see
+
+Smaller, but the same theme — each was invisible until something ran:
+
+- **SQLAlchemy enums stored member *names*, not values,** and
+  `native_enum=False` alone produced an unconstrained `VARCHAR` because
+  `create_constraint` defaults to `False` in 2.0. Caught by reading the emitted
+  DDL in `psql` rather than trusting the model definition. Reading generated DDL
+  after every migration is now a standing habit.
+- **OpenAI's `max_tokens` is rejected by every reasoning model.** The adapter
+  worked on `gpt-4o` and would have 400'd the moment anyone selected an o-series
+  or gpt-5 model. `max_completion_tokens` is also the true analogue of
+  Anthropic's budget — both cover reasoning *plus* visible output.
+- **`completion_tokens` silently bundles invisible reasoning tokens** with the
+  text the user sees, so `output_tokens` alone cannot answer "how much did we
+  spend on reasoning nobody read?" The split is preserved in `raw_metadata`.
+- **Token usage arrives across multiple stream events.** Anthropic sends input
+  tokens on `message_start` and output tokens at the end; replacing usage
+  per-chunk would drop whichever half arrived first — leaving half the cost data
+  null for one provider only, and passing every test written against the mock.
+- **`vars()` fails on `slots=True` dataclasses.** `/metrics/summary` returned a
+  500 in the container while every repository test passed. Testing the query
+  layer is not testing the endpoint; the serialisation boundary between them is
+  exactly where that class of mistake lives. Endpoint tests were added.
+- **`capabilities: drop: ["ALL"]` broke nginx**, whose entrypoint needs
+  `CAP_CHOWN`. Fixed by switching to the unprivileged image rather than
+  loosening the security context to suit the base image.
+
+---
+
+## Design decisions and tradeoffs
+
+### Three timestamps, not one
+
+`inference_logs` records `started_at` and `completed_at` (measured in the request
+path) plus `ingested_at` (server-side). A single `created_at DEFAULT now()` would
+record *ingest* time, because the worker writes rows asynchronously — so a
+worker backlog would render as twenty silent minutes followed by a traffic spike
+that never happened, with every latency percentile computed over the wrong
+population.
+
+Every dashboard query buckets on `completed_at`. With three timestamps adjacent
+in one table that is a one-word mistake review will not catch, so a test asserts
+the bucketing column directly.
+
+### Redis Streams over Kafka
+
+Simpler to operate and genuinely lightweight, with weaker durability and
+retention guarantees. Fine at this scale. Because the wrapper depends on an
+`EventBus` interface rather than on Redis, swapping the transport is an
+infrastructure change, not an application rewrite — and the same interface is
+what lets the entire instrumentation path be tested with no broker at all.
+
+### At-least-once, made idempotent
+
+The wrapper mints the event id *before* the call and it becomes the
+`inference_logs` primary key, so redelivery collides on the PK
+(`ON CONFLICT DO NOTHING`) instead of duplicating. The worker acks **after** the
+write commits: acking first would silently lose events on every crash; acking
+last makes redelivery the failure mode, which the upsert absorbs. Verified by
+replaying the stream — `duplicates=1, inserted=0`, row count unchanged.
+
+### `events_raw` + `inference_logs`
+
+Roughly double the storage, in exchange for replay: a parsing bug can be fixed
+and re-applied to the original payloads rather than leaving permanently wrong
+rows. Worth it at this volume; at massive volume it needs a retention policy
+attached.
+
+### Regex redaction, not NER
+
+Catches structured identifiers — emails, phone numbers, card-shaped digit runs,
+SSN-shaped strings, API keys. **It does not catch names or addresses written in
+prose.** A test asserts that gap so this claim stays honest, and Presidio is the
+upgrade path.
+
+Redaction runs in the API process *before* the event is published, so unredacted
+content never reaches Redis, `events_raw`, or `inference_logs`. Redacting in the
+worker instead would leave raw PII sitting exactly where an audit would look.
+
+### A custom dashboard, not Prometheus + Grafana
+
+Grafana is the industry-standard answer and would mean exposing `/metrics` in
+Prometheus text format instead. This trades standardisation for one fewer moving
+part in compose and Kubernetes, and for panels aimed at this system specifically
+— the ingestion-lag panel exists because of a bug a generic dashboard would not
+have surfaced.
+
+### SSE, not WebSockets
+
+One-directional token streaming over ordinary HTTP: it passes through proxies and
+ingresses unchanged, browsers reconnect on their own, and Starlette streams it
+natively. A WebSocket would buy bidirectionality this feature does not use.
+
+Metadata and content are separate event types: `ttft` is its own frame rather
+than a field on the first chunk, so a client rendering text never unpacks timing
+data. Failures arrive as an `error` frame **on a 200**, because once headers are
+sent the status line is committed.
+
+---
+
+## Known limitations
+
+Stated rather than hidden.
+
+- **`inference_logs.message_id` is always NULL.** The assistant message is
+  written after the call returns, so publishing its id would race the worker into
+  a foreign-key violation. Correlation is on `conversation_id` + `started_at`.
+  Closing it properly means pre-generating the message UUID *and* making the FK
+  soft (indexed, unenforced) — the worker can still outrun the API's commit even
+  with a known id. That is real scope, not a patch.
+- **Redis outage loses events.** The publisher gives up after ~200ms and the
+  chat request succeeds anyway. A deliberate tradeoff, not an oversight.
+- **Single Postgres instance.** Dashboard queries compete with the write path. A
+  read replica for analytics is the obvious next step; a managed database is the
+  real production answer, and the `StatefulSet` here exists so the stack is
+  self-contained on a laptop.
+- **Worker HPA scales on CPU**, which is a poor proxy. The right signal is Redis
+  stream depth, which needs KEDA or a Prometheus adapter. Noted in the manifest
+  rather than faked.
+- **No authentication.** Single-user demo.
+- **`ConversationStatus.CANCELLED` is unused.** Cancellation is recorded on the
+  inference log, where it belongs; the enum value is reserved.
+- **Secrets are committed as placeholders** so `kubectl apply -k` works on a
+  fresh cluster. Real deployments use External Secrets or a CSI driver.
+
+## What I'd do with more time
+
+- **OpenTelemetry spans instead of a bespoke event schema.** The wrapper is
+  already a span boundary in everything but name; exporting OTLP would make this
+  interoperable with existing tracing rather than a private format.
+- **Partition `inference_logs` by month**, with a retention policy for
+  `events_raw`. The indexes are right for the query shapes; the table is not
+  designed to grow forever.
+- **Retry with jittered backoff in the worker.** It currently sleeps a flat
+  second on failure, which thunders when several replicas recover together.
+- **Alerting on the ingestion-lag panel.** The measurement exists; nothing pages
+  on it. That is the gap between "visible" and "noticed."
+- **Generate the frontend's API types from the OpenAPI schema** FastAPI already
+  serves, instead of hand-writing them.
+- **Read replica for dashboard queries**, isolating analytics from the write path.

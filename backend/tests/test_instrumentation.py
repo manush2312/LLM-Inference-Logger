@@ -229,3 +229,58 @@ async def test_only_the_newest_turn_is_previewed() -> None:
     )
 
     assert bus.published[0].input_preview == "the newest question"
+
+
+async def test_generator_close_is_recorded_as_cancelled() -> None:
+    """Locks the `GeneratorExit` branch of `_classify`.
+
+    Starlette signals a client disconnect by calling `aclose()` on the response
+    generator, which raises `GeneratorExit` -- not `CancelledError`. In live
+    runs this is the path that actually fires, ahead of the `is_disconnected()`
+    watcher, so if it were classified as an error every closed browser tab
+    would be filed as a provider failure.
+
+    This is also the cheapest branch in the system to break silently: it
+    depends on Starlette implementation behaviour rather than a documented ASGI
+    guarantee, and breaking it produces no crash -- only a slow drift in what
+    the dashboard claims. Tested separately from the disconnect-watcher test,
+    which drives `CancelledError` instead and would still pass.
+    """
+    bus = InMemoryEventBus()
+    provider = wrap(_NeverEndingProvider(), bus)
+
+    stream = provider.stream_chat(request(model="never"))
+    async for _ in stream:
+        break
+
+    await stream.aclose()
+
+    assert len(bus.published) == 1
+    event = bus.published[0]
+    assert event.status is InferenceStatus.CANCELLED, (
+        "GeneratorExit was not treated as a cancellation"
+    )
+    assert event.error_type is None
+
+
+async def test_shutdown_drain_waits_for_inflight_publishes() -> None:
+    """`shield` protects a publish from its caller, not from the process exiting.
+
+    A rolling deploy sends SIGTERM mid-publish; without an explicit drain the
+    loop closes and the event vanishes -- the same silent-telemetry-loss class
+    as the double-cancel bug, triggered by pod termination instead.
+    """
+    from app.instrumentation.wrapper import drain_pending_publishes
+
+    class _SlowBus(InMemoryEventBus):
+        async def publish(self, event: object) -> bool:  # type: ignore[override]
+            await asyncio.sleep(0.05)
+            return await super().publish(event)  # type: ignore[arg-type]
+
+    bus = _SlowBus()
+    await wrap(MockProvider(), bus).complete(request())
+
+    dropped = await drain_pending_publishes(grace_seconds=1.0)
+
+    assert dropped == 0
+    assert len(bus.published) == 1

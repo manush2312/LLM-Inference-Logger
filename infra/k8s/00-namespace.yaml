@@ -1,0 +1,9 @@
+# Everything lives in one namespace, so `kubectl delete namespace llm-logger`
+# is a complete, single-command teardown -- and so a misdirected `kubectl
+# apply` cannot land on top of unrelated workloads in `default`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm-logger
+  labels:
+    app.kubernetes.io/part-of: llm-inference-logger

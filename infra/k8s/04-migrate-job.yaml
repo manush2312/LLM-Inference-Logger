@@ -1,0 +1,52 @@
+# Migrations as a Job, not an init container on the API Deployment.
+#
+# An init container runs once per pod, so scaling the API to three replicas runs
+# three concurrent `alembic upgrade head` against one database. Alembic takes an
+# advisory lock, so that is survivable rather than corrupting -- but it makes
+# every rollout slower and turns a migration failure into a pod that crash-loops
+# instead of a Job that reports failed. A Job runs exactly once per apply and is
+# the thing you look at when a deploy goes wrong.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: llm-logger
+  annotations:
+    # In a real pipeline this is a pre-sync hook (Argo) or a `helm upgrade`
+    # pre-upgrade hook, so it completes before new app pods start.
+    app.kubernetes.io/hook: pre-install,pre-upgrade
+spec:
+  backoffLimit: 3
+  # Kept after completion so a failed migration's logs are still readable.
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        # Wait rather than crash-loop. Without this the Job burns its
+        # backoffLimit racing Postgres's first start, leaving `Error` pods that
+        # look like migration failures but are only impatience -- exactly the
+        # kind of misleading signal this project exists to eliminate.
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; do
+                echo "waiting for postgres"; sleep 2
+              done
+          envFrom:
+            - configMapRef: { name: app-config }
+            - secretRef: { name: app-secrets }
+      containers:
+        - name: migrate
+          image: llm-inference-logger-backend:dev
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "upgrade", "head"]
+          envFrom:
+            - configMapRef: { name: app-config }
+            - secretRef: { name: app-secrets }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }

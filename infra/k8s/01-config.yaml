@@ -1,0 +1,45 @@
+# Non-secret configuration. Anything that would be embarrassing in `kubectl get
+# -o yaml` belongs in the Secret below, not here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: llm-logger
+data:
+  APP_ENV: "production"
+  LOG_LEVEL: "INFO"
+  # JSON, because these logs are read by a collector rather than a person.
+  LOG_FORMAT: "json"
+
+  POSTGRES_HOST: "postgres"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "llm_logger"
+
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+
+  EVENT_BUS_BACKEND: "redis"
+  EVENT_PUBLISH_TIMEOUT_MS: "200"
+  EVENT_STREAM_MAXLEN: "100000"
+
+  DEFAULT_PROVIDER: "mock"
+  MAX_OUTPUT_TOKENS: "16000"
+  REDACTION_ENABLED: "true"
+---
+# Committed with placeholder values so `kubectl apply -k` works on a fresh
+# cluster with no manual step. Real credentials come from a secrets manager
+# (External Secrets, Sealed Secrets, or the cloud provider's CSI driver) --
+# never from a file in git. See infra/k8s/README.md.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+  namespace: llm-logger
+type: Opaque
+stringData:
+  POSTGRES_USER: "llm"
+  POSTGRES_PASSWORD: "change-me-in-a-real-deployment"
+  # Empty is valid: the registry simply omits providers with no key, and the
+  # mock provider keeps the whole system demonstrable without either.
+  ANTHROPIC_API_KEY: ""
+  OPENAI_API_KEY: ""

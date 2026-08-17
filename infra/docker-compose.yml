@@ -1,13 +1,41 @@
-# Local development stack.
+# The whole system, one command:
 #
-# Milestone 0 brings up only the stateful backing services, so the API and
-# worker can be run on the host with fast reload. The full five-service stack
-# (frontend, backend, worker, redis, postgres) lands in M5; these two service
-# definitions carry over unchanged.
+#   make up          # or: docker compose -f infra/docker-compose.yml up --build
 #
-#   docker compose -f infra/docker-compose.yml up -d
+# Five services. `backend` and `worker` are the *same image* with different
+# commands -- they share the app package, so the event contract and ORM models
+# are imported rather than duplicated, and producer and consumer cannot drift.
 #
+# Migrations run as a one-shot `migrate` service that both app services wait on,
+# rather than at container start. Two API replicas starting at once would
+# otherwise both try to migrate, and concurrent Alembic runs on one database is
+# a race worth designing out rather than hoping about.
+
 name: llm-inference-logger
+
+x-app-env: &app-env
+  APP_ENV: docker
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  # JSON in containers: these logs are read by a collector, not a human.
+  LOG_FORMAT: json
+  POSTGRES_USER: ${POSTGRES_USER:-llm}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-llm}
+  POSTGRES_DB: ${POSTGRES_DB:-llm_logger}
+  # Service names, not localhost -- compose's DNS resolves these.
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: 5432
+  REDIS_HOST: redis
+  REDIS_PORT: 6379
+  EVENT_BUS_BACKEND: redis
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  DEFAULT_PROVIDER: ${DEFAULT_PROVIDER:-mock}
+  REDACTION_ENABLED: ${REDACTION_ENABLED:-true}
+
+x-app-build: &app-build
+  build:
+    context: ../backend
+    dockerfile: Dockerfile
 
 services:
   postgres:
@@ -22,8 +50,8 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      # Depending services wait on this, so "container started" never gets
-      # mistaken for "database accepting connections".
+      # Depending services wait on this, so "container started" is never
+      # mistaken for "accepting connections".
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-llm} -d ${POSTGRES_DB:-llm_logger}"]
       interval: 5s
       timeout: 3s
@@ -33,8 +61,8 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # AOF on: the event stream is the buffer protecting us from Postgres
-    # outages, so it should survive a Redis restart too.
+    # AOF on: the stream is the buffer that protects ingestion from a Postgres
+    # outage, so it should survive a Redis restart too.
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "${REDIS_PORT:-6379}:6379"
@@ -45,6 +73,65 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # One-shot. Runs to completion, then both app services start.
+  migrate:
+    <<: *app-build
+    environment: *app-env
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    <<: *app-build
+    environment: *app-env
+    command: ["llm-api"]
+    restart: unless-stopped
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Liveness, not readiness: a Postgres blip must not make Docker restart
+      # the API in a loop and turn a recoverable dependency failure into a
+      # total one.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  worker:
+    <<: *app-build
+    environment: *app-env
+    command: ["llm-worker"]
+    restart: unless-stopped
+    # Scales independently of the API: `docker compose up -d --scale worker=3`
+    # works unchanged, because Redis consumer groups hand each entry to exactly
+    # one consumer with no coordination code of ours.
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    # Graceful shutdown: the worker finishes and acks its in-flight batch on
+    # SIGTERM. The default 10s is enough for a batch but not for a hung write.
+    stop_grace_period: 20s
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-5173}:8080"
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:

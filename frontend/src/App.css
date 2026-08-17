@@ -305,3 +305,13 @@
   background: var(--danger);
   color: #fff;
 }
+
+.sidebar__actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.sidebar__actions .btn {
+  text-decoration: none;
+}

@@ -25,9 +25,14 @@ export function ConversationList() {
     <nav className="sidebar">
       <div className="sidebar__header">
         <span className="sidebar__title">Conversations</span>
-        <button className="btn btn--ghost" onClick={() => navigate("/")}>
-          New
-        </button>
+        <span className="sidebar__actions">
+          <NavLink className="btn btn--ghost" to="/dashboard">
+            Metrics
+          </NavLink>
+          <button className="btn btn--ghost" onClick={() => navigate("/")}>
+            New
+          </button>
+        </span>
       </div>
 
       {isLoading && <p className="sidebar__empty">Loading…</p>}

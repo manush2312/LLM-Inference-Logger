@@ -1,0 +1,101 @@
+# The ingestion worker.
+#
+# Its own Deployment, from the same image as the API, for one reason: the two
+# have opposite scaling pressures. The API scales with concurrent users; the
+# worker scales with event volume and database write throughput. Coupling them
+# would mean scaling the chat path to clear an ingestion backlog.
+#
+# No Service. Nothing dials in -- the worker polls Redis outbound, which is also
+# why it needs no ingress, no port and no probes that depend on being reachable.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: llm-logger
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      # SIGTERM asks the worker to finish and acknowledge its current batch. Cut
+      # short, the batch is simply redelivered and the idempotent upsert absorbs
+      # it -- so this is about avoiding pointless rework, not correctness.
+      terminationGracePeriodSeconds: 30
+      # Waits for its dependencies instead of restart-looping into them.
+      initContainers:
+        - name: wait-for-postgres
+          image: postgres:16-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER"; do
+                echo "waiting for postgres"; sleep 2
+              done
+          envFrom:
+            - configMapRef: { name: app-config }
+            - secretRef: { name: app-secrets }
+        - name: wait-for-redis
+          image: redis:7-alpine
+          command:
+            - sh
+            - -c
+            - |
+              until redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" ping; do
+                echo "waiting for redis"; sleep 2
+              done
+          envFrom:
+            - configMapRef: { name: app-config }
+      containers:
+        - name: worker
+          image: llm-inference-logger-backend:dev
+          imagePullPolicy: IfNotPresent
+          command: ["llm-worker"]
+          envFrom:
+            - configMapRef: { name: app-config }
+            - secretRef: { name: app-secrets }
+          # No HTTP probes: this process serves nothing. Note the failure mode
+          # this leaves open, and why the dashboard covers it instead -- a
+          # worker that is running but ingesting nothing (the NOGROUP bug) is
+          # indistinguishable from a healthy one at the process level. That is
+          # precisely why ingestion lag is a dashboard panel rather than a
+          # probe: the signal has to come from whether rows are landing, not
+          # from whether the process is up.
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 10001
+            capabilities: { drop: ["ALL"] }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  namespace: llm-logger
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 2
+  maxReplicas: 8
+  # CPU is a poor proxy here -- the right signal is Redis stream depth
+  # (XLEN minus the group's delivered position), which needs KEDA or a
+  # Prometheus adapter to expose as a custom metric. Noted rather than faked:
+  # scaling ingestion on CPU will lag a backlog it should be reacting to.
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
