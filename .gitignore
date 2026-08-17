@@ -29,3 +29,6 @@ dist/
 # Runtime artifacts
 *.log
 docs/screenshots/*.tmp
+
+# Frontend build output
+frontend/dist/

@@ -40,11 +40,17 @@ _DELAYS: Final[dict[str, float]] = {
 
 _ERROR_MODEL: Final = "mock-error"
 
+#: The turn/context counts are load-bearing, not decoration: they make
+#: multi-turn plumbing *observable*. If conversation history were being dropped
+#: on the way to the provider, every reply would claim to be turn 1 with no
+#: prior context -- a bug that is otherwise invisible, because a chat UI looks
+#: perfectly healthy while the model silently forgets everything.
 _TEMPLATE: Final = (
-    "You asked about {topic}. Here is a deterministic reply from the mock "
-    "provider, which streams token by token so that latency, time-to-first-token "
-    "and cancellation all behave exactly as they would against a real model. "
-    "Nothing here reaches the network."
+    "You asked about {topic}. This is turn {turn} of the conversation, and I "
+    "received {prior} earlier message(s) as context. Here is a deterministic "
+    "reply from the mock provider, which streams token by token so that "
+    "latency, time-to-first-token and cancellation all behave exactly as they "
+    "would against a real model. Nothing here reaches the network."
 )
 
 
@@ -59,7 +65,11 @@ class MockProvider(BaseProvider):
 
     async def stream_chat(self, request: ChatRequest) -> AsyncIterator[StreamChunk]:
         delay = _DELAYS.get(request.model, _DELAYS["mock"])
-        words = _TEMPLATE.format(topic=self._topic(request)).split()
+        words = _TEMPLATE.format(
+            topic=self._topic(request),
+            turn=sum(1 for m in request.messages if m.role is MessageRole.USER),
+            prior=max(len(request.messages) - 1, 0),
+        ).split()
 
         # Token counts are derived from the text rather than invented, so the
         # dashboard's cost panels show internally consistent numbers.

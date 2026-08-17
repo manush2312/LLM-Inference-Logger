@@ -17,6 +17,8 @@ from app.core.config import Settings
 from app.db.repositories.conversations import ConversationRepository
 from app.db.repositories.inference_logs import InferenceLogRepository
 from app.db.session import Database
+from app.providers.registry import ProviderRegistry
+from app.services.chat import ChatService
 
 
 def get_settings_dep(request: Request) -> Settings:
@@ -43,6 +45,14 @@ SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
 
+def get_registry(request: Request) -> ProviderRegistry:
+    registry: ProviderRegistry = request.app.state.registry
+    return registry
+
+
+RegistryDep = Annotated[ProviderRegistry, Depends(get_registry)]
+
+
 def get_conversation_repo(session: SessionDep) -> ConversationRepository:
     return ConversationRepository(session)
 
@@ -53,3 +63,14 @@ def get_inference_log_repo(session: SessionDep) -> InferenceLogRepository:
 
 ConversationRepoDep = Annotated[ConversationRepository, Depends(get_conversation_repo)]
 InferenceLogRepoDep = Annotated[InferenceLogRepository, Depends(get_inference_log_repo)]
+
+
+def get_chat_service(
+    conversations: ConversationRepoDep,
+    registry: RegistryDep,
+    settings: SettingsDep,
+) -> ChatService:
+    return ChatService(conversations=conversations, registry=registry, settings=settings)
+
+
+ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]

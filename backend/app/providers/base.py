@@ -71,9 +71,16 @@ class ChatRequest:
 
     messages: Sequence[ChatMessage]
     model: str
-    #: Caps the provider's total output. On models with reasoning enabled this
-    #: budget covers reasoning *and* the visible answer, so a value tuned for
-    #: answer length alone will truncate mid-sentence.
+    #: Caps the provider's total output, counting reasoning *and* the visible
+    #: answer -- so a value tuned for answer length alone truncates
+    #: mid-sentence on a reasoning model.
+    #:
+    #: This field earns its place in the shared contract only because both
+    #: adapters can honour it identically; each still maps it to whichever
+    #: parameter its own SDK wants (`max_tokens` for Anthropic,
+    #: `max_completion_tokens` for OpenAI, since OpenAI's legacy `max_tokens`
+    #: is rejected by reasoning models). Contrast `temperature`, which is
+    #: absent precisely because the two providers *cannot* honour it alike.
     max_output_tokens: int = 16_000
     system: str | None = None
 

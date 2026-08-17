@@ -7,11 +7,12 @@ them identically -- which is the whole point of the provider abstraction.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import openai
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageParam
+from openai.types.completion_usage import CompletionUsage
 
 from app.core.errors import ProviderError
 from app.domain.enums import MessageRole
@@ -39,7 +40,13 @@ class OpenAIProvider(BaseProvider):
             stream = await self._client.chat.completions.create(
                 model=request.model,
                 messages=self._to_openai_messages(request),
-                max_tokens=request.max_output_tokens,
+                # `max_completion_tokens`, not the legacy `max_tokens`: the
+                # latter is rejected outright by every reasoning model
+                # (o-series, gpt-5*). This one is also the true analogue of
+                # Anthropic's budget -- it covers reasoning plus visible
+                # output, which is what makes one normalised
+                # `max_output_tokens` mean the same thing on both providers.
+                max_completion_tokens=request.max_output_tokens,
                 stream=True,
                 # Without this, a streaming response reports no usage at all
                 # and every OpenAI row would land with null token counts --
@@ -54,9 +61,13 @@ class OpenAIProvider(BaseProvider):
                     yield StreamChunk(
                         usage=TokenUsage(
                             input_tokens=event.usage.prompt_tokens,
+                            # Includes reasoning tokens on reasoning models --
+                            # same convention as Anthropic, where thinking
+                            # counts toward output. Billed spend, not visible
+                            # length.
                             output_tokens=event.usage.completion_tokens,
                         ),
-                        metadata={"provider_request_id": event.id},
+                        metadata=self._usage_metadata(event.id, event.usage),
                     )
                     continue
 
@@ -70,6 +81,24 @@ class OpenAIProvider(BaseProvider):
                 )
         except openai.APIError as exc:
             raise self._translate(exc) from exc
+
+    @staticmethod
+    def _usage_metadata(request_id: str, usage: CompletionUsage) -> dict[str, Any]:
+        """Preserve the reasoning/visible split that `output_tokens` flattens.
+
+        `completion_tokens` bundles reasoning tokens together with the text the
+        user actually sees. Recording only that number makes it impossible to
+        answer "how much of our spend was reasoning nobody read?" -- so the
+        breakdown goes into `raw_metadata`, which exists precisely for
+        provider-specific detail that is worth keeping but not worth a column.
+        """
+        metadata: dict[str, Any] = {"provider_request_id": request_id}
+
+        details = usage.completion_tokens_details
+        if details is not None and details.reasoning_tokens is not None:
+            metadata["reasoning_tokens"] = details.reasoning_tokens
+
+        return metadata
 
     @staticmethod
     def _to_openai_messages(request: ChatRequest) -> list[ChatCompletionMessageParam]:

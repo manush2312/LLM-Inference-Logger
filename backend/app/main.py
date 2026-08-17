@@ -15,11 +15,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import health
+from app.api import chat, conversations, health
 from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger
 from app.db.session import Database
+from app.providers.registry import ProviderRegistry
 
 log = get_logger(__name__)
 
@@ -35,6 +36,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     log.info("startup", env=settings.app_env, bus=settings.event_bus_backend)
 
     app.state.database = Database(settings)
+    # Built once: constructing vendor SDK clients per request would create a
+    # new connection pool on every call.
+    app.state.registry = ProviderRegistry.from_settings(settings)
 
     try:
         yield
@@ -71,6 +75,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     _register_error_handlers(app)
 
     app.include_router(health.router)
+    app.include_router(conversations.router)
+    app.include_router(chat.router)
 
     return app
 
