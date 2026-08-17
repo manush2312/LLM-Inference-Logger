@@ -32,3 +32,4 @@ docs/screenshots/*.tmp
 
 # Frontend build output
 frontend/dist/
+.pytest_cache/
