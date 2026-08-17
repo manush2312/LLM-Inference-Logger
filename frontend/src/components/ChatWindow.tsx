@@ -25,6 +25,11 @@ export function ChatWindow() {
   // contain both `:` (llama3.2:1b) and `/` (meta-llama/llama-4), so any
   // separator risks splitting in the wrong place.
   const [selection, setSelection] = useState<string>("");
+
+  // Conversations this component navigated to *itself*, as a result of its own
+  // send. A ref rather than state, so the reset effect below cannot be caught
+  // out by render ordering.
+  const selfNavigatedRef = useRef<string | null>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
 
   const messages = conversation?.messages ?? [];
@@ -36,9 +41,19 @@ export function ChatWindow() {
     });
   }, [messages.length, stream.text]);
 
-  // Clear the provisional bubble when switching conversations, so a half-
-  // streamed reply cannot bleed into a different transcript.
+  // Clear the provisional bubble when the *user* switches conversations, so a
+  // half-streamed reply cannot bleed into a different transcript.
+  //
+  // The self-navigation guard is essential. Moving onto a newly-created
+  // conversation now happens at the `start` frame, so this effect fires *during*
+  // streaming -- and resetting there wipes the tokens as they arrive, making the
+  // reply appear only once it is complete. That is a regression this exact
+  // effect caused when the navigate moved earlier.
   useEffect(() => {
+    if (selfNavigatedRef.current === conversationId) {
+      selfNavigatedRef.current = null;
+      return;
+    }
     stream.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
@@ -75,6 +90,9 @@ export function ChatWindow() {
       // could not be shown as it arrived.
       (id) => {
         if (!conversationId) {
+          // Recorded before navigating, so the reset effect can tell this
+          // apart from the user clicking a different conversation.
+          selfNavigatedRef.current = id;
           navigate(`/c/${id}`, { replace: true });
         }
       },

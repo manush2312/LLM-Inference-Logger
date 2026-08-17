@@ -147,7 +147,12 @@ make check      # ruff + mypy --strict + unit tests
 make test-all   # adds integration tests (needs make infra-up)
 ```
 
-117 tests. Unit tests need no Postgres, no Redis, and no API keys.
+121 tests — 117 backend, 4 frontend. Backend unit tests need no Postgres, no
+Redis, and no API keys.
+
+The frontend tests are deliberately *temporal*: they assert that something is on
+screen **before** a stream completes, because three consecutive bugs lived in
+that seam and none was visible from reading the code or from the backend suite.
 
 ### Providers
 
@@ -327,6 +332,19 @@ Smaller, but the same theme — each was invisible until something ran:
 - **`capabilities: drop: ["ALL"]` broke nginx**, whose entrypoint needs
   `CAP_CHOWN`. Fixed by switching to the unprivileged image rather than
   loosening the security context to suit the base image.
+- **Fixing the vanishing message broke streaming.** Moving the navigate to the
+  `start` frame made a `useEffect` keyed on `conversationId` fire *mid-stream*,
+  and that effect called `reset()` — wiping the accumulating tokens, so the reply
+  again only appeared once complete. One bug traded for another in the same
+  seam.
+
+  The fix is a self-navigation guard, so the reset can tell "the user clicked a
+  different conversation" apart from "we just created this one". More useful
+  than the fix: after regressing this seam twice by reasoning about browser
+  behaviour, it now has real tests. **And I verified they fail on the broken
+  code** — the first version passed against the bug, because rendering
+  `ChatWindow` without the route table left `useParams()` permanently empty, so
+  the effect never re-fired. A test that cannot fail is worse than no test.
 - **Your own message vanished while waiting for the reply.** Three innocuous
   decisions combined into it: the composer clears the input on send, the
   transcript renders only server state, and the transcript query was invalidated

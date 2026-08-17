@@ -74,7 +74,11 @@ web: ## Run the frontend dev server
 # Quality gates -- `make check` is what CI runs
 # ---------------------------------------------------------------------------
 .PHONY: check
-check: lint types test ## Run every gate
+check: lint types test web-test ## Run every gate
+
+.PHONY: web-test
+web-test: ## Frontend tests (rendering-over-time behaviour)
+	cd frontend && npm run test
 
 .PHONY: lint
 lint: ## Lint and format-check
