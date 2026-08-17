@@ -313,14 +313,27 @@ sudo k3s ctr images pull ghcr.io/manush2312/llm-inference-logger-frontend:main
 
 This issues and renews the TLS certificate.
 
+The version is resolved at install time rather than pinned here. cert-manager
+tracks Kubernetes closely, and a version written into a document ages into an
+incompatibility with whatever k3s installs months later — the failure mode is a
+missing API version, which reads as a corrupt manifest rather than a version skew.
+
 ```bash
-kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
-kubectl -n cert-manager rollout status deploy/cert-manager --timeout=180s
-kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=180s
+CM_VERSION=$(curl -s https://api.github.com/repos/cert-manager/cert-manager/releases/latest \
+  | grep -o '"tag_name": *"[^"]*"' | cut -d'"' -f4)
+echo "installing cert-manager ${CM_VERSION}"
+
+kubectl apply -f "https://github.com/cert-manager/cert-manager/releases/download/${CM_VERSION}/cert-manager.yaml"
+kubectl -n cert-manager rollout status deploy/cert-manager --timeout=240s
+kubectl -n cert-manager rollout status deploy/cert-manager-webhook --timeout=240s
+kubectl -n cert-manager get pods
 ```
 
 Wait for the **webhook** specifically. Applying a `ClusterIssuer` before it is
 serving fails with a connection-refused error that reads like a broken manifest.
+
+cert-manager adds roughly 150 MB across three pods, which is worth noting on a node
+where memory is the binding constraint.
 
 ## Step 14 — Create the secrets
 
