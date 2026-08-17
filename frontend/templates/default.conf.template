@@ -7,8 +7,19 @@
 #
 # Two halves are required: a `resolver`, and a *variable* in `proxy_pass`, which
 # is what makes nginx defer the lookup. `NGINX_LOCAL_RESOLVERS` is populated by
-# the image's own entrypoint from /etc/resolv.conf, so this works unchanged
-# under Docker's embedded DNS and under Kubernetes' cluster DNS.
+# the image's own entrypoint from /etc/resolv.conf.
+#
+# The catch, and it cost a 502 in Kubernetes: nginx's `resolver` does NOT apply
+# the `search` domains from /etc/resolv.conf. It only ever issues absolute
+# lookups. Under Docker's flat embedded DNS `backend` resolves either way, so
+# switching to runtime resolution looked free -- but in Kubernetes short names
+# depend entirely on `search llm-logger.svc.cluster.local ...`, and the bare
+# name became `Host not found` on every request while the backend pods sat
+# there perfectly ready.
+#
+# So the upstream authority is injected instead of assumed: compose keeps the
+# short `backend:8000`, Kubernetes supplies the FQDN. Anything that gives nginx
+# a name its own resolver can answer works here.
 resolver ${NGINX_LOCAL_RESOLVERS} valid=10s ipv6=off;
 
 server {
@@ -46,7 +57,7 @@ server {
         # explicit $request_uri: with a variable in proxy_pass nginx does *not*
         # append the original URI for you, so omitting it silently sends every
         # request to `/`.
-        set $upstream http://backend:8000;
+        set $upstream http://${BACKEND_UPSTREAM};
         proxy_pass $upstream$request_uri;
         proxy_http_version 1.1;
         proxy_set_header Host $host;

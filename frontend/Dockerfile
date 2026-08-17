@@ -34,6 +34,10 @@ FROM nginxinc/nginx-unprivileged:1.27-alpine AS runtime
 # set, which leaves the placeholder unsubstituted and nginx refusing to
 # start with `host not found in resolver "${NGINX_LOCAL_RESOLVERS}"`.
 ENV NGINX_ENTRYPOINT_LOCAL_RESOLVERS=1
+# Default suits compose, where Docker's DNS answers the short name. Kubernetes
+# overrides it with a fully-qualified one, because nginx's resolver does not use
+# search domains -- see the note in templates/default.conf.template.
+ENV BACKEND_UPSTREAM=backend:8000
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 # A template, not a finished conf: the image's entrypoint runs envsubst over

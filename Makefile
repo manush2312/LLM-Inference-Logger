@@ -151,13 +151,30 @@ ps: ## Show service status
 # reach one by accident.
 # ---------------------------------------------------------------------------
 KIND_CLUSTER := llm-logger
+# The ingress controller is pinned AND vendored, for two separate reasons.
+#
+# Pinned, not `main`: fetching an unpinned branch means the controller can change
+# under you between two runs of the same command, which is the opposite of what a
+# reproducible deploy is for.
+#
+# Vendored: `make k8s-deploy` used to fetch this at deploy time, which makes a
+# GitHub outage or rate limit a failure of *this* project. That is not
+# hypothetical -- raw.githubusercontent.com returned 429 for this IP mid-way
+# through a verification run and blocked the deploy entirely. Anyone evaluating
+# this repo should not need GitHub to be reachable and unthrottled. The file is
+# fetched once into vendor/ and committed; the fetch below is only the bootstrap
+# path for refreshing it, and it caches into the same place.
+INGRESS_VERSION := controller-v1.11.3
+INGRESS_URL := https://raw.githubusercontent.com/kubernetes/ingress-nginx/$(INGRESS_VERSION)/deploy/static/provider/kind/deploy.yaml
+INGRESS_VENDORED := $(K8S)/vendor/ingress-nginx-$(INGRESS_VERSION).yaml
 KCTX := --context kind-$(KIND_CLUSTER)
 K8S := infra/k8s
 
 .PHONY: kind-up
 kind-up: ## Create the local cluster and install an ingress controller
 	kind create cluster --config $(K8S)/kind-cluster.yaml
-	kubectl $(KCTX) apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/main/deploy/static/provider/kind/deploy.yaml
+	$(MAKE) $(INGRESS_VENDORED)
+	kubectl $(KCTX) apply -f $(INGRESS_VENDORED)
 	kubectl $(KCTX) -n ingress-nginx wait --for=condition=available deploy/ingress-nginx-controller --timeout=180s
 # `deployment available` is not the same as `admission webhook serving`:
 # applying an Ingress in that gap fails with a connection-refused webhook error.
@@ -170,6 +187,19 @@ kind-up: ## Create the local cluster and install an ingress controller
 		if [ -n "$$addrs" ]; then echo "admission webhook ready at $$addrs"; break; fi; \
 		sleep 2; \
 	done
+
+# A file target, not .PHONY: once vendor/ is committed this never runs again.
+$(INGRESS_VENDORED):
+	@echo "vendoring ingress-nginx $(INGRESS_VERSION) (one time)..."
+	@mkdir -p $(dir $@)
+	@for i in 1 2 3; do \
+		curl -fsSL -o $@.tmp $(INGRESS_URL) && mv $@.tmp $@ && break; \
+		rm -f $@.tmp; \
+		echo "  fetch failed (attempt $$i/3), retrying in 15s..."; sleep 15; \
+	done
+	@test -s $@ || { echo "ERROR: could not fetch $(INGRESS_URL)"; \
+		echo "  raw.githubusercontent.com may be rate-limiting this IP (429)."; \
+		echo "  Retry later, or drop the file at $@ by hand."; exit 1; }
 
 .PHONY: kind-load
 kind-load: ## Build both images and load them into the cluster
