@@ -1,0 +1,145 @@
+"""Provider abstraction.
+
+Every provider is normalised to a single method: `stream_chat`, yielding
+`StreamChunk`s. That one seam is what the instrumentation wrapper hooks into,
+so adding a provider gets full logging for free -- no changes to the wrapper,
+the event contract, or the worker.
+
+Two decisions worth stating:
+
+* **Streaming is the only primitive.** Non-streaming is `complete()`, a
+  concrete helper that drains the stream. The alternative -- separate
+  `generate()` and `stream_chat()` methods -- means two code paths, two places
+  to compute usage, and two chances for the instrumentation to diverge. One
+  path is one truth.
+* **No sampling parameters in the normalised request.** Providers disagree on
+  them: `temperature` and `top_p` are rejected outright by current Anthropic
+  models but accepted by OpenAI. A shared `temperature` field would therefore
+  be a field that silently means "break Anthropic". Each adapter owns whatever
+  knobs its own SDK accepts.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Sequence
+from dataclasses import dataclass, field
+from typing import Any, ClassVar
+
+from app.domain.enums import MessageRole
+
+
+@dataclass(frozen=True, slots=True)
+class ChatMessage:
+    """One turn of conversation, in provider-neutral form."""
+
+    role: MessageRole
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class TokenUsage:
+    """Token accounting for a single call.
+
+    Both fields are optional: providers report usage at different points in a
+    stream, and a call that fails early may never report it at all. Recording
+    `None` is honest; recording `0` would silently understate real spend.
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class StreamChunk:
+    """One increment of a streaming response.
+
+    A chunk may carry text, metadata, or both. `usage` and `finish_reason`
+    typically arrive on the final chunk, but adapters are free to emit them
+    whenever their provider does -- the wrapper keeps the last value it sees.
+    """
+
+    delta_text: str = ""
+    finish_reason: str | None = None
+    usage: TokenUsage | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class ChatRequest:
+    """A normalised request. Deliberately minimal -- see the module docstring."""
+
+    messages: Sequence[ChatMessage]
+    model: str
+    #: Caps the provider's total output. On models with reasoning enabled this
+    #: budget covers reasoning *and* the visible answer, so a value tuned for
+    #: answer length alone will truncate mid-sentence.
+    max_output_tokens: int = 16_000
+    system: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedResponse:
+    """The result of draining a stream to completion."""
+
+    text: str
+    usage: TokenUsage | None = None
+    finish_reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+class BaseProvider(ABC):
+    """Adapter from one vendor SDK to this application's vocabulary.
+
+    An adapter's only job is translation: vendor stream events in,
+    `StreamChunk`s out, vendor exceptions mapped to `ProviderError`. It does no
+    logging, no timing, and no persistence -- that is the wrapper's job, which
+    is precisely why the wrapper works for every provider identically.
+    """
+
+    #: Registry key. Also the value written to `inference_logs.provider`.
+    name: ClassVar[str]
+
+    @abstractmethod
+    def stream_chat(self, request: ChatRequest) -> AsyncIterator[StreamChunk]:
+        """Stream a completion. Must raise `ProviderError` on upstream failure."""
+
+    @abstractmethod
+    def default_model(self) -> str:
+        """Model used when the caller does not name one."""
+
+    def is_configured(self) -> bool:
+        """Whether this provider has what it needs to serve traffic.
+
+        Providers that fail this are omitted from the registry, so an
+        unconfigured provider produces a clear "not configured" error at the
+        API boundary rather than an authentication failure from deep inside a
+        vendor SDK.
+        """
+        return True
+
+    async def complete(self, request: ChatRequest) -> CompletedResponse:
+        """Non-streaming convenience, built on the streaming path.
+
+        Shares the exact code path -- and therefore the exact instrumentation
+        -- as streaming, rather than duplicating it.
+        """
+        parts: list[str] = []
+        usage: TokenUsage | None = None
+        finish_reason: str | None = None
+        metadata: dict[str, Any] = {}
+
+        async for chunk in self.stream_chat(request):
+            parts.append(chunk.delta_text)
+            if chunk.usage is not None:
+                usage = chunk.usage
+            if chunk.finish_reason is not None:
+                finish_reason = chunk.finish_reason
+            metadata.update(chunk.metadata)
+
+        return CompletedResponse(
+            text="".join(parts),
+            usage=usage,
+            finish_reason=finish_reason,
+            metadata=metadata,
+        )

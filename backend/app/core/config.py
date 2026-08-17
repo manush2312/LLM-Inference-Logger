@@ -80,8 +80,13 @@ class Settings(BaseSettings):
     openai_api_key: str | None = None
 
     default_provider: str = "mock"
-    default_anthropic_model: str = "claude-sonnet-5"
+    default_anthropic_model: str = "claude-opus-5"
     default_openai_model: str = "gpt-4o"
+
+    #: Caps provider output. On models with reasoning enabled this budget
+    #: covers reasoning *and* the visible answer, so a value tuned for answer
+    #: length alone truncates mid-sentence.
+    max_output_tokens: int = Field(default=16_000, ge=256)
 
     # --- Instrumentation ---------------------------------------------------
     preview_max_chars: int = Field(default=500, ge=0)
