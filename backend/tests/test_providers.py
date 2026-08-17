@@ -95,8 +95,26 @@ async def test_reply_reflects_the_latest_user_message() -> None:
 
 
 def settings(**overrides: object) -> Settings:
-    base: dict[str, object] = {"anthropic_api_key": None, "openai_api_key": None}
-    return Settings(**(base | overrides))  # type: ignore[arg-type]
+    """Settings that ignore the developer's own `.env`.
+
+    `_env_file=None` is load-bearing. Without it these tests read whatever is in
+    the repo's `.env`, so a local `OLLAMA_ENABLED=true` or a real API key
+    silently changes which providers get registered -- and the suite starts
+    passing or failing on machine state rather than on the code. It stayed
+    hidden because CI has no `.env` and neither did this machine, until one was
+    written for a local Ollama run.
+
+    Every provider credential is also pinned explicitly, so adding a provider
+    cannot quietly widen what these tests see.
+    """
+    base: dict[str, object] = {
+        "anthropic_api_key": None,
+        "openai_api_key": None,
+        "groq_api_key": None,
+        "gemini_api_key": None,
+        "ollama_enabled": False,
+    }
+    return Settings(_env_file=None, **(base | overrides))  # type: ignore[arg-type]
 
 
 def test_unconfigured_providers_are_not_registered() -> None:

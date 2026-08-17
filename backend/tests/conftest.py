@@ -20,14 +20,22 @@ from app.main import create_app
 
 @pytest.fixture
 def settings() -> Settings:
-    """Isolated settings: in-memory bus, no credentials, quiet logs."""
+    """Isolated settings: in-memory bus, no credentials, quiet logs.
+
+    `_env_file=None` keeps the developer's `.env` out of unit tests -- otherwise
+    a local key or an enabled local provider changes the app under test.
+    """
     return Settings(
+        _env_file=None,
         app_env="local",
         log_level="WARNING",
         event_bus_backend=EventBusBackend.MEMORY,
         default_provider="mock",
         anthropic_api_key=None,
         openai_api_key=None,
+        groq_api_key=None,
+        gemini_api_key=None,
+        ollama_enabled=False,
     )
 
 
