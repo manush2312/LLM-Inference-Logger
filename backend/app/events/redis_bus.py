@@ -101,13 +101,25 @@ class RedisEventStream(EventStream):
         # reply as `Any` because its shape depends on RESP version and on
         # `decode_responses`. Naming the shape once here keeps the cast out of
         # the worker and gives the rest of the codebase a typed surface.
-        raw_response = await self._client.xreadgroup(
-            groupname=self._group,
-            consumername=self._consumer,
-            streams={self._stream: ">"},
-            count=count,
-            block=block_ms,
-        )
+        try:
+            raw_response = await self._client.xreadgroup(
+                groupname=self._group,
+                consumername=self._consumer,
+                streams={self._stream: ">"},
+                count=count,
+                block=block_ms,
+            )
+        except ResponseError as exc:
+            if "NOGROUP" not in str(exc):
+                raise
+            # The stream or the group vanished underneath us -- an eviction, a
+            # manual cleanup, a flushed dev database. Without this the worker
+            # spins on the same error forever and silently stops ingesting,
+            # while still looking alive to a liveness probe. Recreate and let
+            # the next poll proceed.
+            log.warning("consumer_group_missing", group=self._group, detail="recreating")
+            await self.ensure_group()
+            return []
         response = cast(list[tuple[str, list[tuple[str, dict[str, str]]]]], raw_response or [])
 
         delivered: list[DeliveredEvent] = []

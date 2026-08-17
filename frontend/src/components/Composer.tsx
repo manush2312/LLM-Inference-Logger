@@ -2,22 +2,20 @@ import { useState } from "react";
 
 interface ComposerProps {
   onSend: (content: string) => Promise<void>;
-  disabled: boolean;
+  isStreaming: boolean;
+  onStop: () => void;
 }
 
-export function Composer({ onSend, disabled }: ComposerProps) {
+export function Composer({ onSend, isStreaming, onStop }: ComposerProps) {
   const [draft, setDraft] = useState("");
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
 
     const content = draft.trim();
-    if (!content || disabled) return;
+    if (!content || isStreaming) return;
 
-    // Cleared before awaiting so the input frees up immediately. If the send
-    // fails the error is surfaced above the composer, and the text is
-    // recoverable from the transcript -- losing a keystroke is a worse
-    // experience than losing a failed draft.
+    // Cleared before awaiting so the input frees up immediately.
     setDraft("");
     await onSend(content);
   }
@@ -29,19 +27,28 @@ export function Composer({ onSend, disabled }: ComposerProps) {
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
-          // Enter sends, Shift+Enter inserts a newline -- the convention every
-          // chat interface uses.
+          // Enter sends, Shift+Enter inserts a newline.
           if (event.key === "Enter" && !event.shiftKey) {
             void submit(event);
           }
         }}
         placeholder="Send a message…"
         rows={3}
-        disabled={disabled}
+        disabled={isStreaming}
       />
-      <button className="btn btn--primary" type="submit" disabled={disabled || !draft.trim()}>
-        {disabled ? "Sending…" : "Send"}
-      </button>
+
+      {/* Stop replaces Send while a reply is in flight, rather than sitting
+          beside it. Two enabled actions during streaming would be ambiguous,
+          and Send is not a legal action mid-turn anyway. */}
+      {isStreaming ? (
+        <button className="btn btn--danger" type="button" onClick={onStop}>
+          Stop
+        </button>
+      ) : (
+        <button className="btn btn--primary" type="submit" disabled={!draft.trim()}>
+          Send
+        </button>
+      )}
     </form>
   );
 }

@@ -17,6 +17,7 @@ Behaviour is selected by model name, so every path is reachable from the UI:
 * `mock-slow`    -- long pauses between tokens; use it to demo cancellation
 * `mock-error`   -- fails partway through, after emitting some output
 * `mock-instant` -- no delays at all; used by the test suite
+* `mock-cancel`  -- never terminates on its own; exists to prove cancellation
 """
 
 from __future__ import annotations
@@ -36,7 +37,16 @@ _DELAYS: Final[dict[str, float]] = {
     "mock-slow": 0.6,
     "mock-error": 0.04,
     "mock-instant": 0.0,
+    "mock-cancel": 0.08,
 }
+
+#: Never finishes by itself. That is the whole point: because it has no natural
+#: end, a `cancelled` row from this model can only have come from an actual
+#: interruption -- there is no "the user got bored waiting" ambiguity the way
+#: there would be if `mock-slow` served both roles. Its pacing is deliberately
+#: unrealistic; what is under test is correct behaviour on interruption, not
+#: plausible timing.
+_ENDLESS_MODEL: Final = "mock-cancel"
 
 _ERROR_MODEL: Final = "mock-error"
 
@@ -75,6 +85,11 @@ class MockProvider(BaseProvider):
         # dashboard's cost panels show internally consistent numbers.
         input_tokens = sum(len(m.content.split()) for m in request.messages)
 
+        if request.model == _ENDLESS_MODEL:
+            async for chunk in self._stream_forever(delay):
+                yield chunk
+            return  # unreachable: only cancellation leaves the loop above
+
         for index, word in enumerate(words):
             # `mock-error` fails *after* streaming some output, which is the
             # interesting case: it produces a log row with a partial
@@ -98,6 +113,20 @@ class MockProvider(BaseProvider):
             # `raw_metadata` JSONB column is exercised by the mock path too.
             metadata={"provider_request_id": self._request_id(request)},
         )
+
+    @staticmethod
+    async def _stream_forever(delay: float) -> AsyncIterator[StreamChunk]:
+        """Emit until interrupted. Yields no usage and no finish_reason.
+
+        A call that never completes has no final token count to report, which
+        is exactly what a real cancelled call looks like -- so the log row's
+        null token columns are truthful rather than an artefact of the mock.
+        """
+        counter = 0
+        while True:
+            counter += 1
+            yield StreamChunk(delta_text=f"still-streaming-{counter} ")
+            await asyncio.sleep(delay)
 
     @staticmethod
     def _topic(request: ChatRequest) -> str:

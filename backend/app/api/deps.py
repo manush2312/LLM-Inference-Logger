@@ -20,7 +20,7 @@ from app.db.session import Database
 from app.events.bus import EventBus
 from app.instrumentation.redaction import Redactor
 from app.providers.registry import ProviderRegistry
-from app.services.chat import ChatService
+from app.services.chat import StreamingChatService
 
 
 def get_settings_dep(request: Request) -> Settings:
@@ -81,14 +81,14 @@ def get_chat_service(
     request: Request,
     registry: RegistryDep,
     settings: SettingsDep,
-) -> ChatService:
+) -> StreamingChatService:
     """Built per request, but from process-wide resources.
 
     The service opens its own transactions rather than receiving a session,
     because one chat turn spans two of them with a provider call in between --
     see `app.services.chat`.
     """
-    return ChatService(
+    return StreamingChatService(
         database=get_database(request),
         registry=registry,
         settings=settings,
@@ -97,4 +97,4 @@ def get_chat_service(
     )
 
 
-ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]
+ChatServiceDep = Annotated[StreamingChatService, Depends(get_chat_service)]

@@ -22,10 +22,15 @@ preferable to a turn that silently disappears.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
 from app.core.config import Settings
+from app.core.errors import AppError, ProviderError
 from app.core.logging import get_logger
 from app.db.models import Conversation, Message
 from app.db.repositories.conversations import ConversationRepository
@@ -154,4 +159,156 @@ class ChatService:
         async with self._database.session() as session:
             return await ConversationRepository(session).append_message(
                 conversation_id, role=MessageRole.ASSISTANT, content=content
+            )
+
+
+# ---------------------------------------------------------------------------
+# Streaming
+# ---------------------------------------------------------------------------
+#
+# Domain-level stream events. The API layer maps these onto SSE frames and does
+# nothing else, so the wire format can change without touching orchestration --
+# and the service stays testable without an HTTP client.
+
+
+@dataclass(frozen=True, slots=True)
+class StreamStarted:
+    conversation_id: uuid.UUID
+    provider: str
+    model: str
+
+
+@dataclass(frozen=True, slots=True)
+class StreamFirstToken:
+    """Emitted once, the moment the first token of real text arrives.
+
+    Its own event rather than a field on the first content chunk: timing is
+    metadata about the stream, not part of it, and a client rendering text
+    should never have to unpack measurements to find the words.
+    """
+
+    ttft_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class StreamDelta:
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class StreamCompleted:
+    message_id: uuid.UUID
+    latency_ms: int
+
+
+@dataclass(frozen=True, slots=True)
+class StreamFailed:
+    """A failure that happened after the response headers were already sent.
+
+    Once streaming has begun the HTTP status is fixed, so a failure has to be
+    reported in-band. Returning a 502 is not available any more -- the client
+    has long since seen a 200.
+    """
+
+    code: str
+    message: str
+
+
+ChatStreamEvent = StreamStarted | StreamFirstToken | StreamDelta | StreamCompleted | StreamFailed
+
+
+class StreamingChatService(ChatService):
+    """`ChatService` with a streaming turn.
+
+    Same two-transaction shape as `send()`: the user turn is committed before
+    the provider is called, so cancellation and failure both leave a coherent
+    transcript and a loggable conversation id.
+    """
+
+    async def stream(
+        self,
+        *,
+        content: str,
+        conversation_id: uuid.UUID | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        provider_name, model_name = self._registry.resolve_model(provider, model)
+        adapter = self._registry.get(provider_name)
+
+        conversation, _user_message, history = await self._record_user_turn(
+            conversation_id=conversation_id, content=content
+        )
+
+        yield StreamStarted(
+            conversation_id=conversation.id, provider=provider_name, model=model_name
+        )
+
+        request = ChatRequest(
+            messages=[ChatMessage(role=m.role, content=m.content) for m in history],
+            model=model_name,
+            max_output_tokens=self._settings.max_output_tokens,
+        )
+        instrumented = InstrumentedProvider(
+            adapter,
+            bus=self._bus,
+            redactor=self._redactor,
+            conversation_id=conversation.id,
+            streamed=True,
+        )
+
+        parts: list[str] = []
+        start = time.monotonic()
+        first_token_seen = False
+
+        try:
+            async for chunk in instrumented.stream_chat(request):
+                if not chunk.delta_text:
+                    continue
+
+                if not first_token_seen:
+                    first_token_seen = True
+                    yield StreamFirstToken(ttft_ms=int((time.monotonic() - start) * 1000))
+
+                parts.append(chunk.delta_text)
+                yield StreamDelta(text=chunk.delta_text)
+
+        except asyncio.CancelledError:
+            # The user stopped the generation. Keep whatever they already saw
+            # so the transcript matches the screen after a refresh, then let
+            # cancellation continue propagating.
+            await self._persist_partial(conversation.id, parts)
+            raise
+
+        except ProviderError as exc:
+            # Reported in-band: headers are long gone, so there is no status
+            # code left to set. The wrapper has already logged it.
+            await self._persist_partial(conversation.id, parts)
+            yield StreamFailed(code=exc.code, message=exc.message)
+            return
+
+        except AppError as exc:
+            yield StreamFailed(code=exc.code, message=exc.message)
+            return
+
+        assistant_message = await self._record_assistant_turn(conversation.id, "".join(parts))
+        yield StreamCompleted(
+            message_id=assistant_message.id,
+            latency_ms=int((time.monotonic() - start) * 1000),
+        )
+
+    async def _persist_partial(self, conversation_id: uuid.UUID, parts: list[str]) -> None:
+        """Save partial output produced before an interruption.
+
+        Shielded for the same reason the event publish is: this runs while the
+        task is being cancelled, and a second cancellation would otherwise kill
+        the write mid-flight, losing text the user already read on screen.
+        """
+        text = "".join(parts).strip()
+        if not text:
+            return
+
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.shield(
+                asyncio.create_task(self._record_assistant_turn(conversation_id, text))
             )

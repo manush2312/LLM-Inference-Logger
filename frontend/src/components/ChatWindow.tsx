@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ApiError } from "../api/client";
-import { useConversation, useProviders, useSendMessage } from "../hooks/useChat";
+import { useConversation, useProviders } from "../hooks/useChat";
+import { useStreamingChat } from "../hooks/useStreamingChat";
 import { Composer } from "./Composer";
 import { MessageBubble } from "./MessageBubble";
 
@@ -14,7 +14,7 @@ export function ChatWindow() {
 
   const { data: conversation, isLoading } = useConversation(conversationId);
   const { data: providers } = useProviders();
-  const sendMessage = useSendMessage();
+  const stream = useStreamingChat();
 
   const [model, setModel] = useState<string>("");
   const transcriptRef = useRef<HTMLDivElement>(null);
@@ -26,55 +26,82 @@ export function ChatWindow() {
       top: transcriptRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [messages.length, sendMessage.isPending]);
+  }, [messages.length, stream.text]);
+
+  // Clear the provisional bubble when switching conversations, so a half-
+  // streamed reply cannot bleed into a different transcript.
+  useEffect(() => {
+    stream.reset();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId]);
 
   async function handleSend(content: string) {
-    const response = await sendMessage.mutateAsync({
+    const id = await stream.send({
       content,
       conversationId,
       model: model || undefined,
     });
 
-    // A message sent from the "new chat" screen creates a conversation
-    // server-side; move the URL onto it so a refresh now resumes here.
-    if (!conversationId) {
-      navigate(`/c/${response.conversation_id}`, { replace: true });
+    if (!conversationId && id) {
+      navigate(`/c/${id}`, { replace: true });
     }
   }
 
-  const error = sendMessage.error;
+  // While streaming, the accumulated text is shown as a provisional bubble.
+  // Once the server confirms, the refetched transcript replaces it -- so the
+  // rendered conversation is always the persisted one, never a local guess.
+  const showProvisional = stream.isStreaming && stream.text.length > 0;
 
   return (
     <section className="chat">
       <header className="chat__header">
         <h1 className="chat__title">{conversation?.title ?? "New conversation"}</h1>
 
-        <label className="chat__model">
-          <span>Model</span>
-          <select value={model} onChange={(event) => setModel(event.target.value)}>
-            <option value="">
-              {providers ? `Default (${providers.default})` : "Default"}
-            </option>
-            {/* Behaviour-selecting mock models, so the failure and latency
-                paths are reachable from the UI rather than only from tests. */}
-            {providers?.items.some((p) => p.name === "mock") && (
-              <optgroup label="mock provider">
-                <option value="mock">mock — normal</option>
-                <option value="mock-slow">mock-slow — slow stream</option>
-                <option value="mock-error">mock-error — fails mid-response</option>
-              </optgroup>
-            )}
-          </select>
-        </label>
+        <div className="chat__meta">
+          {stream.ttftMs !== null && (
+            <span className="badge" title="Time to first token">
+              TTFT {stream.ttftMs} ms
+            </span>
+          )}
+          {stream.latencyMs !== null && !stream.isStreaming && (
+            <span className="badge" title="Total generation time">
+              {stream.latencyMs} ms
+            </span>
+          )}
+
+          <label className="chat__model">
+            <span>Model</span>
+            <select
+              value={model}
+              onChange={(event) => setModel(event.target.value)}
+              disabled={stream.isStreaming}
+            >
+              <option value="">
+                {providers ? `Default (${providers.default})` : "Default"}
+              </option>
+              {/* The mock behaviours are exposed here on purpose: streaming,
+                  slowness, failure and cancellation are all reachable from the
+                  UI rather than only from the test suite. */}
+              {providers?.items.some((p) => p.name === "mock") && (
+                <optgroup label="mock provider">
+                  <option value="mock">mock — normal</option>
+                  <option value="mock-slow">mock-slow — slow stream</option>
+                  <option value="mock-error">mock-error — fails mid-response</option>
+                  <option value="mock-cancel">mock-cancel — never ends, press Stop</option>
+                </optgroup>
+              )}
+            </select>
+          </label>
+        </div>
       </header>
 
       <div className="chat__transcript" ref={transcriptRef}>
         {isLoading && <p className="chat__hint">Loading conversation…</p>}
 
-        {!isLoading && messages.length === 0 && (
+        {!isLoading && messages.length === 0 && !showProvisional && (
           <p className="chat__hint">
-            Send a message to begin. Replies report which turn they are and how much
-            history they received, so multi-turn context is visible rather than assumed.
+            Send a message to begin. Replies stream token by token and report which
+            turn they are, so multi-turn context is visible rather than assumed.
           </p>
         )}
 
@@ -82,18 +109,36 @@ export function ChatWindow() {
           <MessageBubble key={message.id} message={message} />
         ))}
 
-        {sendMessage.isPending && <p className="chat__hint">Waiting for the model…</p>}
+        {showProvisional && (
+          <article className="bubble bubble--assistant bubble--streaming">
+            <header className="bubble__role">assistant</header>
+            <div className="bubble__content">{stream.text}</div>
+          </article>
+        )}
 
-        {error && (
+        {stream.isStreaming && !showProvisional && (
+          <p className="chat__hint">Waiting for the first token…</p>
+        )}
+
+        {stream.wasCancelled && (
+          <p className="chat__notice">
+            Generation stopped. Whatever had already arrived was saved, and the call
+            was recorded as <code>cancelled</code> — not as an error.
+          </p>
+        )}
+
+        {stream.error && (
           <p className="chat__error" role="alert">
-            {error instanceof ApiError
-              ? `${error.code}: ${error.message}`
-              : "Something went wrong."}
+            {stream.error.code}: {stream.error.message}
           </p>
         )}
       </div>
 
-      <Composer onSend={handleSend} disabled={sendMessage.isPending} />
+      <Composer
+        onSend={handleSend}
+        isStreaming={stream.isStreaming}
+        onStop={stream.stop}
+      />
     </section>
   );
 }

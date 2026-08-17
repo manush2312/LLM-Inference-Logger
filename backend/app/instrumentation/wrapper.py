@@ -140,11 +140,43 @@ class InstrumentedProvider(BaseProvider):
                 raw_metadata=dict(provider_metadata) or None,
             )
 
-            # Awaited rather than fired into a background task: the bus itself
-            # is bounded and never raises, so this adds at most one short
-            # timeout to the request tail while keeping the publish
-            # deterministic and testable.
-            await self._bus.publish(event)
+            await _publish_resiliently(self._bus, event)
+
+
+#: Publish tasks that outlived the caller which started them. Held only to keep
+#: the event loop from garbage-collecting a task that is still running.
+_INFLIGHT: set[asyncio.Task[bool]] = set()
+
+
+async def _publish_resiliently(bus: EventBus, event: InferenceEvent) -> None:
+    """Publish so that *repeated* cancellation cannot lose the event.
+
+    `Task.cancel()` delivers `CancelledError` once, so a single cancel leaves
+    this `finally` free to await. But a disconnect watcher that keeps polling
+    after it has already cancelled will call `cancel()` again -- and the second
+    one lands while this publish is suspended, destroying the very event the
+    cancellation was supposed to record. Measured, not theorised: an unguarded
+    watcher publishes zero events.
+
+    The publish therefore runs in its own task and is awaited through a shield.
+    Normally that is just an await, so the behaviour stays deterministic and
+    testable. Under repeated cancellation the shield's await is interrupted but
+    the underlying task keeps running to completion, so the event survives and
+    cancellation still propagates.
+
+    `app.api.sse` also guards its watcher to cancel exactly once. This is the
+    second layer, because the wrapper must not depend on every future caller
+    getting that discipline right.
+    """
+    task = asyncio.create_task(bus.publish(event))
+    _INFLIGHT.add(task)
+    task.add_done_callback(_INFLIGHT.discard)
+
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError:
+        log.debug("publish_shielded_from_cancellation", event_id=str(event.id))
+        raise
 
 
 def _merge_usage(current: TokenUsage, incoming: TokenUsage | None) -> TokenUsage:
@@ -174,7 +206,11 @@ def _classify(exc: BaseException) -> tuple[InferenceStatus, str | None, str]:
     rate every time a user closed a tab, and mask real provider failures behind
     that noise.
     """
-    if isinstance(exc, asyncio.CancelledError):
+    # Both shapes of "the caller went away". `CancelledError` is an explicit
+    # task cancel; `GeneratorExit` is what Starlette throws when it closes a
+    # response generator because the client disconnected. Treating the latter
+    # as an error would file every closed browser tab as a provider failure.
+    if isinstance(exc, asyncio.CancelledError | GeneratorExit):
         return InferenceStatus.CANCELLED, None, "Cancelled by client"
 
     if isinstance(exc, ProviderError):

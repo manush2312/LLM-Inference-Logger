@@ -1,0 +1,117 @@
+/**
+ * Drives one streamed turn and exposes it as React state.
+ *
+ * The `AbortController` is the whole cancellation story on this side: aborting
+ * the fetch drops the connection, the server's disconnect watcher notices, and
+ * the in-flight model call is cancelled and logged as `cancelled` rather than
+ * left running and billing.
+ */
+
+import { useCallback, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { ApiError } from "../api/client";
+import { streamMessage, type StreamInput } from "../api/stream";
+import { queryKeys } from "./useChat";
+
+export interface StreamingState {
+  /** Text accumulated so far, rendered as a provisional assistant bubble. */
+  text: string;
+  isStreaming: boolean;
+  ttftMs: number | null;
+  latencyMs: number | null;
+  error: ApiError | null;
+  /** True when the last turn ended because the user stopped it. */
+  wasCancelled: boolean;
+}
+
+const IDLE: StreamingState = {
+  text: "",
+  isStreaming: false,
+  ttftMs: null,
+  latencyMs: null,
+  error: null,
+  wasCancelled: false,
+};
+
+export function useStreamingChat() {
+  const queryClient = useQueryClient();
+  const [state, setState] = useState<StreamingState>(IDLE);
+  const controllerRef = useRef<AbortController | null>(null);
+
+  const stop = useCallback(() => {
+    controllerRef.current?.abort();
+  }, []);
+
+  const send = useCallback(
+    async (input: StreamInput): Promise<string | undefined> => {
+      const controller = new AbortController();
+      controllerRef.current = controller;
+
+      setState({ ...IDLE, isStreaming: true });
+
+      let conversationId: string | undefined = input.conversationId;
+
+      try {
+        await streamMessage(
+          input,
+          {
+            onStart: (info) => {
+              conversationId = info.conversation_id;
+            },
+            onTimeToFirstToken: (ttftMs) =>
+              setState((previous) => ({ ...previous, ttftMs })),
+            onChunk: (text) =>
+              setState((previous) => ({ ...previous, text: previous.text + text })),
+            onDone: (info) =>
+              setState((previous) => ({
+                ...previous,
+                isStreaming: false,
+                latencyMs: info.latency_ms,
+              })),
+            onError: (error) =>
+              setState((previous) => ({ ...previous, isStreaming: false, error })),
+          },
+          controller.signal,
+        );
+      } catch (error) {
+        if (controller.signal.aborted) {
+          // Expected: the user pressed Stop. Partial output is already
+          // persisted server-side, so the refetch below will show it.
+          setState((previous) => ({
+            ...previous,
+            isStreaming: false,
+            wasCancelled: true,
+          }));
+        } else {
+          setState((previous) => ({
+            ...previous,
+            isStreaming: false,
+            error:
+              error instanceof ApiError
+                ? error
+                : new ApiError("network_error", "The stream was interrupted.", 0),
+          }));
+        }
+      } finally {
+        controllerRef.current = null;
+
+        // Refetch in every case -- completed, failed, or cancelled. The server
+        // is the authority on what was actually persisted, and after a
+        // cancellation that is a partial reply the client cannot reconstruct.
+        if (conversationId) {
+          void queryClient.invalidateQueries({
+            queryKey: queryKeys.conversation(conversationId),
+          });
+        }
+        void queryClient.invalidateQueries({ queryKey: queryKeys.conversations });
+      }
+
+      return conversationId;
+    },
+    [queryClient],
+  );
+
+  const reset = useCallback(() => setState(IDLE), []);
+
+  return { ...state, send, stop, reset };
+}
