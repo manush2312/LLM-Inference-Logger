@@ -6,6 +6,46 @@ what broke while building it.
 
 ---
 
+## Architecture notes, in brief
+
+The four questions, answered up front; each links to the section that shows the
+mechanism.
+
+**Ingestion flow.** One inference produces exactly one event. `InstrumentedProvider`
+wraps `stream_chat`, and its `finally` block publishes a single event to the Redis
+stream `inference_logs` — fire-and-forget with a ~200 ms budget, shielded so a
+client disconnect cannot kill the publish. A separate worker process consumes via
+`XREADGROUP` on a consumer group, validates the payload, writes the raw envelope to
+`events_raw`, upserts the typed row into `inference_logs`, and acks last. The chat
+request never waits for any of this. → [Ingestion](#ingestion),
+[The instrumentation seam](#the-instrumentation-seam)
+
+**Logging strategy.** Auto-instrumentation at one seam rather than call sites. Every
+provider is constructed through the wrapper, so a new provider inherits logging
+without adding a line to it, and `complete()` is implemented on top of
+`stream_chat` so both paths are covered by the same code. The event id is minted
+client-side before the call, which is what makes retries idempotent. Chat messages
+are written on the request path in two transactions; telemetry travels the async
+path. PII is redacted in the wrapper, before the event leaves the process.
+→ [The instrumentation seam](#the-instrumentation-seam),
+[A chat turn, in two transactions](#a-chat-turn-in-two-transactions)
+
+**Scaling considerations.** The API and worker are stateless and scale
+horizontally; consumer groups mean added workers share the stream without
+coordination. Postgres is the bottleneck under load — the write path is one row per
+inference, and dashboard aggregates compete with it, so a read replica is the first
+real move. Redis Streams are capped with `MAXLEN` so a stalled worker cannot consume
+unbounded memory. → [Scaling](#scaling)
+
+**Failure handling assumptions.** Telemetry is explicitly less important than the
+chat request: if Redis is down the publish times out and the reply still succeeds,
+losing the log. Delivery is at-least-once and made safe by an idempotent upsert on a
+client-minted id. Unparseable or id-less events are dead-lettered rather than
+retried forever. A crash between write and ack causes redelivery, not loss. The one
+loss window accepted by design is a Redis outage. → [Ingestion](#ingestion)
+
+---
+
 ## Layering
 
 ```

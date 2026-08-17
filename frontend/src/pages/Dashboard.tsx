@@ -32,6 +32,7 @@ import {
 } from "recharts";
 import { Link } from "react-router-dom";
 import { useMetrics, useRecentErrors, type TimeBucket } from "../api/metrics";
+import { useReducedMotion } from "../hooks/useReducedMotion";
 import "./Dashboard.css";
 
 /**
@@ -65,6 +66,11 @@ export function Dashboard() {
   const active = WINDOWS[windowIndex];
   const { data, isLoading, error } = useMetrics(active.minutes, active.interval);
   const { data: errors } = useRecentErrors();
+  // Above the early return: hooks must run in the same order on every render, and
+  // there is a `return` for the error state below. Honours the OS reduced-motion
+  // preference for the mount tween, and is also what makes the charts capturable
+  // headlessly -- see the hook for why.
+  const animate = !useReducedMotion();
 
   if (error) {
     return (
@@ -166,6 +172,7 @@ export function Dashboard() {
                 name="p50 latency"
                 stroke={SERIES.p50}
                 {...lineProps}
+                isAnimationActive={animate}
               />
               <Line
                 type="monotone"
@@ -173,6 +180,7 @@ export function Dashboard() {
                 name="p95 latency"
                 stroke={SERIES.p95}
                 {...lineProps}
+                isAnimationActive={animate}
               />
               <Line
                 type="monotone"
@@ -180,6 +188,7 @@ export function Dashboard() {
                 name="p50 TTFT"
                 stroke={SERIES.ttft}
                 {...lineProps}
+                isAnimationActive={animate}
               />
             </LineChart>
           </ResponsiveContainer>
@@ -198,18 +207,20 @@ export function Dashboard() {
               <Legend {...legendProps} />
               {/* 4px rounded data-end on the topmost segment only, anchored to
                   the baseline; 2px surface gap between stacked segments. */}
-              <Bar dataKey="success" name="success" stackId="s" fill={STATUS.success} />
+              <Bar dataKey="success" name="success" stackId="s" fill={STATUS.success} isAnimationActive={animate} />
               <Bar
                 dataKey="cancellations"
                 name="cancelled"
                 stackId="s"
                 fill={STATUS.cancelled}
+                isAnimationActive={animate}
               />
               <Bar
                 dataKey="errors"
                 name="error"
                 stackId="s"
                 fill={STATUS.error}
+                isAnimationActive={animate}
                 radius={[4, 4, 0, 0]}
               />
             </BarChart>

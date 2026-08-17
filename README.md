@@ -25,6 +25,7 @@ load-bearing](#why-the-mock-provider-is-load-bearing).
 
 - [What it does](#what-it-does)
 - [Architecture](#architecture)
+- [Schema design decisions](#schema-design-decisions)
 - [Running it](#running-it)
 - [Why the mock provider is load-bearing](#why-the-mock-provider-is-load-bearing)
 - [What broke and how I found it](#what-broke-and-how-i-found-it) ← the interesting part
@@ -99,6 +100,46 @@ same code. A `try/except/finally` means every terminal outcome converges on one
 remembering to log on each path. Adding a provider adds zero lines to it.
 
 More detail, including the layering rules and the data model: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+---
+
+## Schema design decisions
+
+Four tables. `→` is `ON DELETE CASCADE`, `⇢` is `ON DELETE SET NULL`.
+
+```sql
+conversations   id · title · status · created_at · updated_at
+messages        id · conversation_id → · role · content · seq · created_at
+inference_logs  id · conversation_id ⇢ · message_id ⇢ · provider · model · status
+                streamed · started_at · completed_at · ingested_at
+                latency_ms · ttft_ms · input_tokens · output_tokens
+                input_preview · output_preview · error_type · error_message
+                finish_reason · raw_metadata(jsonb) · schema_version
+events_raw      id · event_type · payload(jsonb) · received_at
+                processed_at · processing_status · processing_error
+```
+
+**Chat messages and inference logs are separate tables, not one.** A message is
+conversational content; a log is one model call. They have different lifetimes,
+different write paths (request path vs. async worker), and different cardinality —
+a failed call produces a log and no message at all. Merging them would mean a
+table where half the columns are null for half the rows.
+
+| Decision | Why |
+|---|---|
+| **Three timestamps, not one** | `started_at`/`completed_at` are measured on the request path; `ingested_at` is when the worker wrote the row. They can be minutes apart. Dashboards bucket on `completed_at` — bucket on `ingested_at` and a drained backlog renders as a traffic spike that never happened |
+| **`id` is client-generated** | Minted by the wrapper *before* the call and reused as the primary key. This is the single thing that makes at-least-once delivery idempotent instead of duplicate-producing: redelivery upserts the same row |
+| **`seq` on messages, not timestamp ordering** | Two messages can share a millisecond, and replicas have skewed clocks. `UNIQUE (conversation_id, seq)` makes turn order explicit and enforced |
+| **`message_id` is nullable** | Errors and cancellations produce no assistant message — and those are precisely the rows the dashboard exists to surface. A `NOT NULL` here would make the most interesting logs unwritable |
+| **Logs outlive their conversation** | `ON DELETE SET NULL`, not `CASCADE`: deleting a transcript must not erase the record of what it cost to produce. Messages *do* cascade — they are the transcript |
+| **`provider`/`model` are plain strings; `status`/`role` are enums** | Adding a provider should be a config change, not a migration. `status` and `role` have closed domains, so they get a real constraint |
+| **Enums store values *and* a CHECK** | SQLAlchemy 2.0 gives you neither by default: `native_enum=False` alone yields an unconstrained VARCHAR happily storing `'ERROR'` where the domain says `'error'`. Caught by reading the emitted DDL in `psql`, not from the model code |
+| **CHECK constraints on durations and tokens** | `latency_ms >= 0`, `completed_at >= started_at`, non-negative token counts. A seconds-vs-milliseconds unit bug then fails loudly instead of silently poisoning every percentile in the dashboard |
+| **`raw_metadata` as JSONB** | Vendor-specific detail worth keeping but not worth a column each — upstream request ids, reasoning-token splits. `schema_version` sits beside it so the shape can change without a migration |
+| **`events_raw` keeps the envelope** | The raw payload is stored before parsing, so a validation bug is replayable rather than lost. It is the audit trail for the pipeline itself |
+| **Partial indexes** | The errors view and the unprocessed-events triage each read a small slice of a large table, so those indexes are `WHERE`-filtered rather than covering every row |
+
+Full detail, including the ingestion invariants: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#data-model)**.
 
 ---
 
@@ -486,6 +527,18 @@ upgrade path.
 Redaction runs in the API process *before* the event is published, so unredacted
 content never reaches Redis, `events_raw`, or `inference_logs`. Redacting in the
 worker instead would leave raw PII sitting exactly where an audit would look.
+
+**Scope: telemetry is redacted, the conversation is not.** Type an email into the
+chat and you will still see it in the transcript and the sidebar title, while
+`inference_logs.input_preview` records `[REDACTED_EMAIL]` — verified by querying
+both tables for the same message. That asymmetry is deliberate. Redacting
+`messages.content` would mean redacting the model's own input, so turn two would
+lose whatever turn one referred to and multi-turn context would quietly break.
+The threat model is the telemetry copy: it is what fans out to dashboards, gets
+retained longest, and would leave the trust boundary first. The conversation is
+the user's own data in their own session. If stored conversations also need
+redacting, that is a retention policy on `messages` — a separate concern from
+instrumentation, and not something to smuggle into the logging path.
 
 ### A custom dashboard, not Prometheus + Grafana
 
