@@ -137,6 +137,35 @@ class Settings(BaseSettings):
     #: length alone truncates mid-sentence.
     max_output_tokens: int = Field(default=16_000, ge=256)
 
+    # --- Conversation context ----------------------------------------------
+    #: How many past messages are replayed to the provider. Every turn resends the
+    #: whole window, so an untrimmed conversation grows the prompt on every
+    #: exchange -- cost and latency rise with it, and eventually the request is
+    #: simply refused. Observed on Groq's free tier, which allows 8000 tokens per
+    #: minute and counts the reserved `max_completion_tokens` against that budget:
+    #: a long chat reached "Requested 8690, Limit 8000" and every further message
+    #: failed. The brief asks for *short* conversational context, and this is what
+    #: makes it short.
+    max_history_messages: int = Field(default=20, ge=2)
+
+    #: Second bound, because message count alone is not one: a single pasted essay
+    #: can exceed the budget on its own. Characters rather than tokens to avoid a
+    #: per-provider tokenizer dependency for a limit that only needs to be
+    #: approximately right -- roughly 4 characters per token.
+    #:
+    #: 12000 chars is ~3000 tokens, and the number is derived from the tightest
+    #: provider rather than picked. Groq's free tier allows 8000 tokens per minute
+    #: and counts the *reserved* `groq_max_output_tokens` (4096) against it, not
+    #: the tokens actually generated. So the usable prompt budget is 8000 - 4096 =
+    #: 3904 tokens, and anything above that fails outright with a 413.
+    #:
+    #: A first attempt at 24000 was measured rather than assumed: the prompt
+    #: plateaued at 4300 tokens, which plus 4096 is 8396 -- still over the limit.
+    #: Trimming history rather than lowering the output reservation is the right
+    #: trade here, because the requests most likely to hit the ceiling ("give me a
+    #: roadmap for X") are exactly the ones that need a long answer.
+    max_history_chars: int = Field(default=12_000, ge=1000)
+
     # --- Instrumentation ---------------------------------------------------
     preview_max_chars: int = Field(default=500, ge=0)
     redaction_enabled: bool = True

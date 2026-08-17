@@ -54,6 +54,38 @@ class ChatResult:
     model: str
 
 
+def recent_window(history: list[Message], *, max_messages: int, max_chars: int) -> list[Message]:
+    """The tail of the conversation, bounded by count and by size.
+
+    A free function rather than a method because it depends on nothing but its
+    arguments -- testing it through a ChatService would mean constructing a
+    database, a registry, an event bus and a redactor to exercise arithmetic.
+
+    Trimming applies to what is *sent upstream*, never to what is stored: the
+    transcript in Postgres stays complete and only the prompt is bounded, so a
+    user scrolling back still sees everything they said.
+
+    Two bounds because neither alone is one. A message cap does not stop a single
+    pasted essay from blowing the budget; a size cap alone would happily send two
+    hundred one-word messages. Whichever binds first wins.
+
+    The newest message is kept unconditionally. It is the question being asked,
+    and dropping it to satisfy a budget would answer the wrong thing.
+    """
+    window = history[-max_messages:]
+
+    budget = max_chars
+    kept: list[Message] = []
+    for message in reversed(window):
+        # `not kept` is what keeps the newest message regardless of its size.
+        if not kept or budget - len(message.content) >= 0:
+            budget -= len(message.content)
+            kept.append(message)
+        else:
+            break
+    return list(reversed(kept))
+
+
 class ChatService:
     def __init__(
         self,
@@ -154,7 +186,15 @@ class ChatService:
 
             history = await repo.messages(conversation.id)
 
-        return conversation, user_message, history
+        return (
+            conversation,
+            user_message,
+            recent_window(
+                history,
+                max_messages=self._settings.max_history_messages,
+                max_chars=self._settings.max_history_chars,
+            ),
+        )
 
     async def _record_assistant_turn(self, conversation_id: uuid.UUID, content: str) -> Message:
         """Second transaction: record the reply."""
