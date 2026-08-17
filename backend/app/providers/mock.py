@@ -73,6 +73,17 @@ class MockProvider(BaseProvider):
     def supported_models(self) -> list[str]:
         return list(_DELAYS)
 
+    def supports_model(self, model: str) -> bool:
+        """A closed set, unlike a real vendor's.
+
+        This override is load-bearing. Without it `_DELAYS.get(model, default)`
+        happily served *any* model name -- so a request for `llama3.2:1b` that
+        lost its `provider` field on the way in came back as a fluent mock reply
+        instead of an error. A silently wrong answer, which is far worse than a
+        400, and it made a routing bug look like a mystery.
+        """
+        return model in _DELAYS
+
     async def stream_chat(self, request: ChatRequest) -> AsyncIterator[StreamChunk]:
         delay = _DELAYS.get(request.model, _DELAYS["mock"])
         words = _TEMPLATE.format(

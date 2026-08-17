@@ -9,7 +9,11 @@ from __future__ import annotations
 import pytest
 
 from app.core.config import Settings
-from app.core.errors import ProviderError, ProviderNotConfiguredError
+from app.core.errors import (
+    ModelNotSupportedError,
+    ProviderError,
+    ProviderNotConfiguredError,
+)
 from app.domain.enums import MessageRole
 from app.providers.base import ChatMessage, ChatRequest
 from app.providers.mock import MockProvider
@@ -255,3 +259,43 @@ def test_providers_advertise_the_models_the_picker_offers() -> None:
     # The mock advertises its behaviour models, so failure and cancellation stay
     # reachable from the UI.
     assert "mock-cancel" in registry.get("mock").supported_models()
+
+
+# --- A provider must never serve a model it does not own --------------------
+
+
+def test_mock_refuses_another_providers_model() -> None:
+    """The bug that made a routing mistake look like a working answer.
+
+    `_DELAYS.get(model, default)` previously served *any* model name, so a
+    request for `llama3.2:1b` whose `provider` field went missing came back as a
+    fluent mock reply. A silently wrong answer is far worse than a 400 -- it
+    turns a one-line routing bug into a mystery.
+    """
+    registry = ProviderRegistry.from_settings(settings())
+
+    with pytest.raises(ModelNotSupportedError) as exc_info:
+        registry.resolve_model("mock", "llama3.2:1b")
+
+    assert exc_info.value.context["requested_model"] == "llama3.2:1b"
+    assert "mock-cancel" in exc_info.value.context["available_models"]
+
+
+def test_mock_still_accepts_its_own_models() -> None:
+    registry = ProviderRegistry.from_settings(settings())
+
+    for model in ("mock", "mock-slow", "mock-error", "mock-instant", "mock-cancel"):
+        assert registry.resolve_model("mock", model) == ("mock", model)
+
+
+def test_real_providers_do_not_gate_on_a_hardcoded_model_list() -> None:
+    """Vendor catalogues change; validating against one here would reject
+    valid models the day a new one ships. They reject unknown models
+    themselves, and the adapter translates that into a ProviderError."""
+    registry = ProviderRegistry.from_settings(settings(groq_api_key="gsk_test"))
+
+    # Not the configured default, and deliberately still allowed through.
+    assert registry.resolve_model("groq", "mixtral-8x7b-32768") == (
+        "groq",
+        "mixtral-8x7b-32768",
+    )

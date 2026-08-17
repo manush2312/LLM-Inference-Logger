@@ -16,7 +16,14 @@ export function ChatWindow() {
   const { data: providers } = useProviders();
   const stream = useStreamingChat();
 
-  const [model, setModel] = useState<string>("");
+  // The selection carries BOTH provider and model, JSON-encoded.
+  //
+  // Sending only the model name was a real bug: the backend then fell back to
+  // the default provider, so picking `llama3.2:1b` was answered by `mock`.
+  // JSON rather than a delimited string because model names legitimately
+  // contain both `:` (llama3.2:1b) and `/` (meta-llama/llama-4), so any
+  // separator risks splitting in the wrong place.
+  const [selection, setSelection] = useState<string>("");
   const transcriptRef = useRef<HTMLDivElement>(null);
 
   const messages = conversation?.messages ?? [];
@@ -35,11 +42,20 @@ export function ChatWindow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
 
+  function parseSelection(): { provider?: string; model?: string } {
+    if (!selection) return {};
+    return JSON.parse(selection) as { provider: string; model: string };
+  }
+
   async function handleSend(content: string) {
+    const picked = parseSelection();
     const id = await stream.send({
       content,
       conversationId,
-      model: model || undefined,
+      // Both, or neither. Sending a model without its provider is what caused
+      // the mis-routing.
+      provider: picked.provider,
+      model: picked.model,
     });
 
     if (!conversationId && id) {
@@ -72,8 +88,8 @@ export function ChatWindow() {
           <label className="chat__model">
             <span>Model</span>
             <select
-              value={model}
-              onChange={(event) => setModel(event.target.value)}
+              value={selection}
+              onChange={(event) => setSelection(event.target.value)}
               disabled={stream.isStreaming}
             >
               <option value="">
@@ -91,15 +107,27 @@ export function ChatWindow() {
                   // failure, cancellation -- and the labels are what make
                   // those reachable from the UI rather than only from tests.
                   <optgroup key={provider.name} label="mock (no network)">
-                    <option value="mock">mock — normal</option>
-                    <option value="mock-slow">mock-slow — slow stream</option>
-                    <option value="mock-error">mock-error — fails mid-response</option>
-                    <option value="mock-cancel">mock-cancel — never ends, press Stop</option>
+                    {[
+                      ["mock", "mock — normal"],
+                      ["mock-slow", "mock-slow — slow stream"],
+                      ["mock-error", "mock-error — fails mid-response"],
+                      ["mock-cancel", "mock-cancel — never ends, press Stop"],
+                    ].map(([value, label]) => (
+                      <option
+                        key={value}
+                        value={JSON.stringify({ provider: "mock", model: value })}
+                      >
+                        {label}
+                      </option>
+                    ))}
                   </optgroup>
                 ) : (
                   <optgroup key={provider.name} label={provider.name}>
                     {provider.models.map((name) => (
-                      <option key={name} value={name}>
+                      <option
+                        key={name}
+                        value={JSON.stringify({ provider: provider.name, model: name })}
+                      >
                         {name}
                       </option>
                     ))}

@@ -9,7 +9,7 @@ a vendor SDK halfway through a stream.
 from __future__ import annotations
 
 from app.core.config import Settings
-from app.core.errors import ProviderNotConfiguredError
+from app.core.errors import ModelNotSupportedError, ProviderNotConfiguredError
 from app.core.logging import get_logger
 from app.providers.anthropic_provider import AnthropicProvider
 from app.providers.base import BaseProvider
@@ -96,6 +96,19 @@ class ProviderRegistry:
         return provider
 
     def resolve_model(self, provider_name: str | None, model: str | None) -> tuple[str, str]:
-        """Resolve (provider, model), applying defaults. Validates the provider."""
+        """Resolve (provider, model), applying defaults and validating both."""
         provider = self.get(provider_name)
-        return provider.name, model or provider.default_model()
+        resolved = model or provider.default_model()
+
+        if not provider.supports_model(resolved):
+            # Caught here rather than left to the provider, so the error names
+            # what is actually available instead of surfacing as a confusingly
+            # normal-looking response from whichever provider was defaulted to.
+            raise ModelNotSupportedError(
+                f"Provider {provider.name!r} does not serve model {resolved!r}",
+                provider=provider.name,
+                requested_model=resolved,
+                available_models=provider.supported_models(),
+            )
+
+        return provider.name, resolved

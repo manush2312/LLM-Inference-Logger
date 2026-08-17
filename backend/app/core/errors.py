@@ -42,6 +42,19 @@ class ProviderNotConfiguredError(AppError):
     code = "provider_not_configured"
 
 
+class ModelNotSupportedError(AppError):
+    """A model was requested from a provider that does not serve it.
+
+    Distinct from `ProviderError` (502) because nothing upstream failed -- the
+    request was wrong. Raised only by providers with a *closed* model set; real
+    vendors have open, changing catalogues and are left to reject unknown models
+    themselves.
+    """
+
+    status_code = 400
+    code = "model_not_supported"
+
+
 class ProviderError(AppError):
     """The upstream LLM provider failed. Wraps the vendor SDK's exception.
 

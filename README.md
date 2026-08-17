@@ -327,6 +327,20 @@ Smaller, but the same theme — each was invisible until something ran:
 - **`capabilities: drop: ["ALL"]` broke nginx**, whose entrypoint needs
   `CAP_CHOWN`. Fixed by switching to the unprivileged image rather than
   loosening the security context to suit the base image.
+- **The model picker silently routed to the wrong provider.** Selecting
+  `llama3.2:1b` returned a *mock* reply. Two bugs stacked: the dropdown sent
+  only the model name, so the backend fell back to the default provider — and
+  `MockProvider` then happily served a model it does not own, because
+  `_DELAYS.get(model, default)` treats any unknown name as "use the default
+  delay". The second bug is what made the first invisible: instead of a 400, you
+  got a fluent, confident, completely wrong answer.
+
+  Fixed on both sides. Providers now declare whether they serve a model —
+  defaulting to *yes*, since real vendors have open catalogues and reject
+  unknown models themselves, with only the mock's closed set enforced. And the
+  dropdown carries provider **and** model, JSON-encoded rather than delimited,
+  because model names legitimately contain both `:` (`llama3.2:1b`) and `/`
+  (`meta-llama/llama-4`).
 - **Compose never read the root `.env`.** It looks for `.env` in the *compose
   file's* directory (`infra/`), not the repo root — so every
   `${VAR:-default}` had been silently falling back to its default since M5.

@@ -125,6 +125,20 @@ class BaseProvider(ABC):
         """
         return [self.default_model()]
 
+    def supports_model(self, model: str) -> bool:
+        """Whether this provider serves `model`.
+
+        Defaults to True: real vendors have open, frequently-changing
+        catalogues, so hardcoding a list here would reject valid models the day
+        a new one ships. They reject unknown models themselves, and the adapter
+        translates that.
+
+        Providers with a genuinely *closed* set override this -- the mock has no
+        upstream to complain, so without it a request for someone else's model
+        gets served a mock reply and looks like a working answer.
+        """
+        return True
+
     def is_configured(self) -> bool:
         """Whether this provider has what it needs to serve traffic.
 
