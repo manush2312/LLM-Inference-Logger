@@ -132,3 +132,55 @@ data:
   # free-tier with no card attached, so an abusive visitor can exhaust a quota but
   # cannot generate a bill.
   DEFAULT_PROVIDER: "mock"
+---
+# imagePullPolicy: Always, overriding the base's IfNotPresent.
+#
+# The base is right for kind, where images are side-loaded with `kind load` and
+# never exist in a registry -- `Always` there would fail trying to pull them.
+# Here it is exactly wrong, and it cost a confusing deploy: the tag is the mutable
+# `:main`, so containerd already had *an* image by that name and `IfNotPresent`
+# told it not to look for a newer one. `kubectl rollout restart` dutifully
+# restarted every pod onto the same stale image and reported success.
+#
+# The symptom is worth recognising: the old code keeps serving, so /healthz and
+# every existing route answer 200 and only the newly added endpoint 404s. It reads
+# like a routing bug in the new code rather than code that was never deployed.
+#
+# The alternative is pinning an immutable tag (the workflow also pushes the commit
+# SHA) and bumping it per deploy, which is stricter and is what a real pipeline
+# should do. `Always` keeps `git pull && kubectl apply` working as a single step.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: llm-logger
+spec:
+  template:
+    spec:
+      containers:
+        - name: backend
+          imagePullPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: llm-logger
+spec:
+  template:
+    spec:
+      containers:
+        - name: worker
+          imagePullPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: llm-logger
+spec:
+  template:
+    spec:
+      containers:
+        - name: frontend
+          imagePullPolicy: Always
