@@ -5,6 +5,10 @@
  *
  * - Headline numbers (requests, error rate, p95, ingestion lag) are **stat
  *   tiles**, not charts. A single value over one window has no shape to plot.
+ * - Interpolation is `linear`, never `monotone`. A spline through sparse samples
+ *   draws a confident curve between points that were never measured: three
+ *   buckets rendered as a smooth parabola, implying a rise and fall that did not
+ *   happen. Straight segments between marked samples claim only what was sampled.
  * - Latency percentiles are a **line chart** -- change over time, three series,
  *   all in milliseconds so they share one axis. Two y-scales would be the
  *   single most common charting mistake; TTFT and total latency are the same
@@ -168,7 +172,7 @@ export function Dashboard() {
               <Tooltip {...tooltipProps} />
               <Legend {...legendProps} />
               <Line
-                type="monotone"
+                type="linear"
                 dataKey="p50"
                 name="p50 latency"
                 stroke={SERIES.p50}
@@ -176,7 +180,7 @@ export function Dashboard() {
                 isAnimationActive={animate}
               />
               <Line
-                type="monotone"
+                type="linear"
                 dataKey="p95"
                 name="p95 latency"
                 stroke={SERIES.p95}
@@ -184,7 +188,7 @@ export function Dashboard() {
                 isAnimationActive={animate}
               />
               <Line
-                type="monotone"
+                type="linear"
                 dataKey="ttft"
                 name="p50 TTFT"
                 stroke={SERIES.ttft}
@@ -231,42 +235,74 @@ export function Dashboard() {
 
       <section className="panel">
         <h2 className="panel__title">By provider and model</h2>
-        <table className="table">
+        {/* Ten flat columns of equally-weighted numbers was the readability
+            problem: a real error rendered exactly as loudly as a zero, so there
+            was nothing to catch the eye. Three changes fix it.
+
+            Identity collapses into one cell (provider over model) rather than two
+            columns -- it is one thing, and splitting it cost width that the
+            numbers needed. Latency and tokens get grouped headers, so it is
+            visible at a glance which numbers belong together. And zeros are
+            muted while non-zero errors and cancellations take the reserved status
+            colour, so the only coloured thing on screen is the thing worth
+            looking at. */}
+        <table className="table table--metrics">
+          <colgroup>
+            <col />
+            <col span={3} className="group" />
+            <col span={3} className="group group--alt" />
+            <col className="group" />
+          </colgroup>
           <thead>
+            <tr className="table__grouprow">
+              <th />
+              <th colSpan={3}>Outcomes</th>
+              <th colSpan={3}>Latency</th>
+              <th>Tokens</th>
+            </tr>
             <tr>
-              <th>Provider</th>
-              <th>Model</th>
-              <th className="num">Requests</th>
-              <th className="num">Errors</th>
-              <th className="num">Cancelled</th>
-              <th className="num">p50 ms</th>
-              <th className="num">p95 ms</th>
+              <th>Provider / model</th>
+              <th className="num">Req</th>
+              <th className="num">Err</th>
+              <th className="num">Cxl</th>
+              <th className="num">p50</th>
+              <th className="num">p95</th>
               {/* Per provider, because TTFT is the number that differs most
                   between them: a thinking model can spend tens of seconds
                   before its first visible token. */}
               <th className="num">p95 TTFT</th>
-              <th className="num">Tokens in</th>
-              <th className="num">Tokens out</th>
+              <th className="num">in / out</th>
             </tr>
           </thead>
           <tbody>
-            {(data?.providers ?? []).map((row) => (
-              <tr key={`${row.provider}/${row.model}`}>
-                <td>{row.provider}</td>
-                <td>{row.model}</td>
-                <td className="num">{row.requests}</td>
-                <td className="num">{row.errors}</td>
-                <td className="num">{row.cancellations}</td>
-                <td className="num">{row.p50_latency_ms ?? "—"}</td>
-                <td className="num">{row.p95_latency_ms ?? "—"}</td>
-                <td className="num">{row.p95_ttft_ms ?? "—"}</td>
-                <td className="num">{row.input_tokens}</td>
-                <td className="num">{row.output_tokens}</td>
-              </tr>
-            ))}
+            {[...(data?.providers ?? [])]
+              // Busiest first. The provider carrying the traffic is the one the
+              // reader is looking for, and alphabetical order buries it.
+              .sort((a, b) => b.requests - a.requests)
+              .map((row) => (
+                <tr key={`${row.provider}/${row.model}`}>
+                  <td className="ident">
+                    <span className="ident__name">{row.provider}</span>
+                    <span className="ident__sub" title={row.model}>
+                      {row.model}
+                    </span>
+                  </td>
+                  <td className="num">{row.requests}</td>
+                  <Count value={row.errors} tone="error" />
+                  <Count value={row.cancellations} tone="cancelled" />
+                  <td className="num">{formatMs(row.p50_latency_ms)}</td>
+                  <td className="num">{formatMs(row.p95_latency_ms)}</td>
+                  <td className="num">{formatMs(row.p95_ttft_ms)}</td>
+                  <td className="num mono">
+                    {row.input_tokens}
+                    <span className="sep"> / </span>
+                    {row.output_tokens}
+                  </td>
+                </tr>
+              ))}
             {data?.providers.length === 0 && (
               <tr>
-                <td colSpan={10} className="table__empty">
+                <td colSpan={8} className="table__empty">
                   No calls in this window.
                 </td>
               </tr>
@@ -283,30 +319,45 @@ export function Dashboard() {
 
       <section className="panel">
         <h2 className="panel__title">Recent errors</h2>
-        <table className="table">
+        {/* The message was the one field worth reading and the only one being
+            truncated to a single clipped line. It now wraps and gets the width,
+            paid for by dropping the redundant `Model` column -- the error type
+            was already carrying more information than the model name. */}
+        <table className="table table--errors">
           <thead>
             <tr>
               <th>When</th>
-              <th>Model</th>
-              <th>Type</th>
-              <th>Message</th>
+              <th>Provider / model</th>
+              <th>Failure</th>
               <th className="num">Latency</th>
             </tr>
           </thead>
           <tbody>
             {(errors ?? []).map((row) => (
               <tr key={row.id}>
-                <td className="mono">{new Date(row.started_at).toLocaleTimeString()}</td>
-                <td>{row.model}</td>
-                <td>{row.error_type ?? "—"}</td>
-                <td className="truncate">{row.error_message ?? "—"}</td>
+                {/* Relative time reads faster for "is this happening now?", which
+                    is the actual question. The exact timestamp stays available on
+                    hover rather than being dropped. */}
+                <td className="mono nowrap" title={new Date(row.started_at).toLocaleString()}>
+                  {formatAgo(row.started_at)}
+                </td>
+                <td className="ident">
+                  <span className="ident__name">{row.provider}</span>
+                  <span className="ident__sub" title={row.model}>
+                    {row.model}
+                  </span>
+                </td>
+                <td className="failure">
+                  <span className="badge badge--error">{row.error_type ?? "error"}</span>
+                  <span className="failure__msg">{row.error_message ?? "—"}</span>
+                </td>
                 <td className="num">{formatMs(row.latency_ms)}</td>
               </tr>
             ))}
             {errors?.length === 0 && (
               <tr>
-                <td colSpan={5} className="table__empty">
-                  No errors recorded. Try the <code>mock-error</code> model.
+                <td colSpan={4} className="table__empty">
+                  No errors in this window.
                 </td>
               </tr>
             )}
@@ -328,7 +379,10 @@ const axisProps = {
 
 const lineProps = {
   strokeWidth: 2,
-  dot: false,
+  // Small dots mark where samples actually are. With `dot: false` and a sparse
+  // series -- which is the normal case for a low-traffic window -- the line gave
+  // no clue whether it was drawn through 3 points or 300.
+  dot: { r: 2, strokeWidth: 0 },
   // Bigger than the mark, so the hover target is comfortable.
   activeDot: { r: 4, strokeWidth: 2, stroke: "var(--surface)" },
   connectNulls: false,
@@ -414,9 +468,32 @@ function Stat({
   );
 }
 
+/** A count where zero is the boring case.
+ *
+ * Muting zeros is what makes a non-zero error visible at a glance -- a column of
+ * equally-bright digits has no signal in it. The number stays rendered either
+ * way, so the state is never carried by colour alone. */
+function Count({ value, tone }: { value: number; tone: "error" | "cancelled" }) {
+  if (value === 0) return <td className="num num--zero">0</td>;
+  return <td className={`num num--${tone}`}>{value}</td>;
+}
+
 function formatMs(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
   return value >= 1000 ? `${(value / 1000).toFixed(2)} s` : `${value} ms`;
+}
+
+/** "2m ago" rather than a wall-clock time.
+ *
+ * The question asked of an error list is almost always "is this still happening",
+ * and a relative age answers it without the reader doing arithmetic against the
+ * current time. */
+function formatAgo(iso: string): string {
+  const seconds = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (seconds < 60) return `${Math.floor(seconds)}s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86_400)}d ago`;
 }
 
 function formatPercent(value: number | undefined): string {

@@ -244,9 +244,18 @@
   text-overflow: ellipsis;
 }
 
-/* Wide tables scroll inside their own panel rather than the page. */
+/* Wide tables scroll inside their own panel rather than the page.
+   
+   `flex-shrink: 0` is not decoration -- without it the last row of every table
+   was being cut in half. Setting `overflow-x: auto` makes the panel a scroll
+   container on *both* axes (CSS will not let one axis be `visible` while the
+   other scrolls), and a flex item that is a scroll container has its
+   `min-height: auto` resolve to 0. So the column flex layout was free to
+   compress each panel below its own content, and did -- silently hiding data in
+   a data table, which is the worst place for it. */
 .panel:has(.table) {
   overflow-x: auto;
+  flex-shrink: 0;
 }
 
 /* --- Recent calls (per-call log browser) --------------------------------- */
@@ -370,4 +379,102 @@
 .calls__more:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+/* --- Table readability --------------------------------------------------- */
+/* Grouped column headers. The band of background behind a group is doing the
+   work that ten undifferentiated columns could not: showing which numbers belong
+   together, without drawing gridlines that compete with the data. */
+.table__grouprow th {
+  padding-bottom: 2px;
+  border-bottom: 0;
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  opacity: 0.75;
+  text-align: right;
+}
+.table__grouprow th:first-child {
+  border: 0;
+}
+.table--metrics col.group {
+  background: rgba(255, 255, 255, 0.016);
+}
+.table--metrics col.group--alt {
+  background: rgba(255, 255, 255, 0.032);
+}
+
+/* Identity as one cell: name over model. Two columns split one thing and spent
+   width the numbers needed. */
+.ident {
+  line-height: 1.25;
+}
+.ident__name {
+  display: block;
+  font-weight: 600;
+}
+.ident__sub {
+  display: block;
+  max-width: 22ch;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+/* Zero is the boring case and recedes; a non-zero count takes the reserved status
+   colour. The digit is always rendered, so state is never colour alone. */
+.num--zero {
+  color: var(--text-muted);
+  opacity: 0.45;
+}
+.num--error {
+  color: var(--danger);
+  font-weight: 600;
+}
+.num--cancelled {
+  color: var(--status-warning, #e0a458);
+  font-weight: 600;
+}
+.sep {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+.nowrap {
+  white-space: nowrap;
+}
+
+/* Slightly roomier rows. At 8px the ten-column table read as a solid block; the
+   extra 3px is what separates rows without adding a single line. */
+.table--metrics td,
+.table--errors td {
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+.table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+/* The failure cell gets the width and is allowed to wrap -- it was the one field
+   worth reading and the only one being clipped. */
+.failure {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 26ch;
+}
+.failure__msg {
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+  /* Wrapping, but bounded: one pathological provider message must not push every
+     other row off the screen. */
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.badge--error {
+  align-self: flex-start;
 }
