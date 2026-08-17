@@ -65,6 +65,7 @@ providers**, and a warm local 1B model beats a cloud API on it (~600 ms vs
 - [Architecture](#architecture)
 - [Schema design decisions](#schema-design-decisions)
 - [Running it](#running-it)
+- [Deploying](#deploying)
 - [Why the mock provider is load-bearing](#why-the-mock-provider-is-load-bearing)
 - [What broke and how I found it](#what-broke-and-how-i-found-it) ← the interesting part
 - [Design decisions and tradeoffs](#design-decisions-and-tradeoffs)
@@ -265,6 +266,39 @@ Drop `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` into `.env` and restart. The registr
 picks them up at startup; providers without a key are simply not registered, so a
 missing key is a clear `400 provider_not_configured` at the API boundary rather
 than an authentication error thrown from inside a vendor SDK mid-stream.
+
+---
+
+## Deploying
+
+The live demo runs on **self-hosted Kubernetes (k3s)** on a single EC2 instance —
+not EKS, which is managed, and whose control plane alone costs more per month than
+this entire deployment.
+
+**[docs/DEPLOY-AWS.md](docs/DEPLOY-AWS.md)** is the full runbook: provisioning,
+k3s, TLS, secrets, and the update loop. It is written to be followed start to
+finish, and the failure modes it lists are ones that actually happened rather than
+ones imagined.
+
+```
+infra/k8s/       base manifests, verified on kind
+infra/k8s-aws/   production overlay: GHCR images, Traefik + cert-manager,
+                 Ollama with a PVC, one replica each, sized for a 4 GB node
+```
+
+Shipping a change, once the cluster exists:
+
+```bash
+git pull
+./infra/k8s-aws/configure.sh YOUR_HOSTNAME your@email.com
+kubectl apply -k infra/k8s-aws
+kubectl -n llm-logger rollout restart deploy/backend deploy/worker deploy/frontend
+```
+
+The `rollout restart` is load-bearing: the manifests pin the mutable tag `:main`,
+so `apply` sees an unchanged spec and rolls nothing. See
+[Deploying an update](docs/DEPLOY-AWS.md#deploying-an-update) for why each step is
+there and what each failure actually means.
 
 ---
 

@@ -404,6 +404,79 @@ Let's Encrypt validates over HTTP before it will issue.
 > Let's Encrypt allows only 5 failures per hostname per week, and once that is
 > exhausted there is nothing to do but wait for the window to roll.
 
+## Deploying an update
+
+Everything above is the first deploy. This is the loop for shipping a change, and
+it is worth reading once: two of its steps exist because skipping them produces
+failures that point somewhere else entirely.
+
+**1. Push, and wait for the images.** `git push` to `main` triggers the Publish
+images workflow. The cluster pulls from GHCR, so nothing changes until it finishes
+— roughly five minutes. Watch it under the repository's Actions tab.
+
+**2. On the server, run the whole block:**
+
+```bash
+cd ~/llm-inference-logger
+git pull
+./infra/k8s-aws/configure.sh YOUR_HOSTNAME your@email.com
+kubectl apply -k infra/k8s-aws
+kubectl -n llm-logger rollout restart deploy/backend deploy/worker deploy/frontend
+kubectl -n llm-logger rollout status deploy/backend  --timeout=300s
+kubectl -n llm-logger rollout status deploy/frontend --timeout=300s
+```
+
+**3. Confirm the new code is actually live**, rather than assuming:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://YOUR_HOSTNAME/metrics/logs
+```
+
+Then hard-refresh the browser (Cmd/Ctrl+Shift+R) — the old bundle is cached.
+
+### Why each step is there
+
+**`configure.sh` runs again after every pull.** The repository stores the hostname
+and ACME email as placeholders, so a pull restores them. Skip this and the Ingress
+applies with a literal `HOSTNAME_PLACEHOLDER` host, which matches no request.
+
+**`rollout restart` is not optional.** The manifests pin the mutable tag `:main`,
+so `kubectl apply` sees an unchanged Deployment spec and changes nothing — there is
+no new revision to roll. The restart is what recreates the pods, and with
+`imagePullPolicy: Always` (set in the overlay) that is when the new image is pulled.
+
+**Wait for `backend`, not just `frontend`.** The frontend is a static bundle and
+rolls in seconds; the backend takes longer. Checking in between returns a 502 from
+a backend that is simply still starting, which looks like a broken deploy.
+
+### When it looks broken
+
+| Symptom | Cause |
+|---|---|
+| `502` on every route | Backend still restarting. Wait for its rollout to finish |
+| `404` on a **new** endpoint, `200` on existing ones | The old image is still running. The pods restarted onto a cached image — check that the Actions build finished, then `rollout restart` again |
+| UI unchanged after a successful deploy | Browser cache. Hard-refresh |
+| `ImagePullBackOff` | The GHCR packages are private. Repo → Packages → Package settings → Change visibility → Public |
+| Ingress serves nothing | `configure.sh` was not re-run after the pull |
+
+That second row is worth recognising: the old code keeps serving, so `/healthz` and
+every pre-existing route answer 200 and only the newly added endpoint 404s. It reads
+as a routing bug in new code rather than code that was never deployed.
+
+### Day-to-day
+
+```bash
+kubectl -n llm-logger get pods                       # health, and restart counts
+kubectl -n llm-logger logs -l app=backend --tail=50 -f
+kubectl -n llm-logger logs job/ollama-pull           # model download progress
+kubectl -n llm-logger get hpa                        # autoscaling, real CPU on k3s
+kubectl top pods -n llm-logger                       # what is actually using memory
+kubectl -n llm-logger get certificate                # TLS renewal state
+free -h                                              # node memory; Ollama dominates
+```
+
+---
+
 ## Verification checklist
 
 Once deployed, all of these should hold:

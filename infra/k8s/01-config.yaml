@@ -29,7 +29,9 @@ data:
 # Committed with placeholder values so `kubectl apply -k` works on a fresh
 # cluster with no manual step. Real credentials come from a secrets manager
 # (External Secrets, Sealed Secrets, or the cloud provider's CSI driver) --
-# never from a file in git. See infra/k8s/README.md.
+# never from a file in git. The hosted deployment creates them on the server
+# and the overlay deletes this placeholder so no apply can overwrite them --
+# see docs/DEPLOY-AWS.md, "Create the secrets".
 apiVersion: v1
 kind: Secret
 metadata:
