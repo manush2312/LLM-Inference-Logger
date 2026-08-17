@@ -1,9 +1,23 @@
 """Chat orchestration.
 
-This is the seam. Everything a chat turn involves -- resolving the provider,
-loading history, calling the model, persisting both messages -- happens here,
-so the HTTP layer stays a thin translation of JSON to arguments and the
-instrumentation wrapper has exactly one call site to wrap.
+One turn spans **two** transactions with the provider call in between, rather
+than one transaction wrapped around everything. That shape is forced by the
+logging requirement, not by preference:
+
+* A provider failure must still produce an `inference_logs` row -- it is the
+  single most important row the errors dashboard shows. Under one transaction
+  the failure rolls the turn back, and any event referencing the conversation
+  would point at a row that was never committed, so the worker's insert would
+  hit a foreign-key violation.
+* Committing the user message first makes `conversation_id` durable *before*
+  the call is made, so every event -- success, error, or cancellation -- can
+  safely reference it.
+* It is also better behaviour: the user's message stays on screen when the
+  model fails, instead of vanishing along with their typing.
+
+The cost, stated plainly: a first message that fails leaves a conversation
+holding a user message and no reply. That is visible and retryable, which is
+preferable to a turn that silently disappears.
 """
 
 from __future__ import annotations
@@ -15,7 +29,11 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.db.models import Conversation, Message
 from app.db.repositories.conversations import ConversationRepository
+from app.db.session import Database
 from app.domain.enums import MessageRole
+from app.events.bus import EventBus
+from app.instrumentation.redaction import Redactor
+from app.instrumentation.wrapper import InstrumentedProvider
 from app.providers.base import ChatMessage, ChatRequest
 from app.providers.registry import ProviderRegistry
 
@@ -35,13 +53,17 @@ class ChatService:
     def __init__(
         self,
         *,
-        conversations: ConversationRepository,
+        database: Database,
         registry: ProviderRegistry,
         settings: Settings,
+        bus: EventBus,
+        redactor: Redactor,
     ) -> None:
-        self._conversations = conversations
+        self._database = database
         self._registry = registry
         self._settings = settings
+        self._bus = bus
+        self._redactor = redactor
 
     async def send(
         self,
@@ -51,33 +73,30 @@ class ChatService:
         provider: str | None = None,
         model: str | None = None,
     ) -> ChatResult:
-        """Run one chat turn and persist both sides of it.
-
-        The whole method runs inside the caller's transaction, so a failure
-        anywhere rolls back cleanly rather than leaving a user message with no
-        reply stranded in the transcript.
-        """
-        # Resolve before writing anything: an unknown provider should be a 400
-        # with an empty database, not a 400 with an orphaned user message.
+        # Resolved before anything is written: an unknown provider should be a
+        # 400 against an untouched database, not a 400 that leaves a
+        # conversation behind.
         provider_name, model_name = self._registry.resolve_model(provider, model)
         adapter = self._registry.get(provider_name)
 
-        conversation = await self._resolve_conversation(conversation_id)
-
-        user_message = await self._conversations.append_message(
-            conversation.id, role=MessageRole.USER, content=content
+        conversation, user_message, history = await self._record_user_turn(
+            conversation_id=conversation_id, content=content
         )
-        await self._conversations.ensure_title(conversation.id, source=content)
-
-        # Reloaded rather than accumulated in memory: the database is the only
-        # thing that survives a restart, so reading history back is also what
-        # proves a resumed conversation carries its full context.
-        history = await self._conversations.messages(conversation.id)
 
         request = ChatRequest(
             messages=[ChatMessage(role=m.role, content=m.content) for m in history],
             model=model_name,
             max_output_tokens=self._settings.max_output_tokens,
+        )
+
+        # Substituted for the raw adapter: the service calls the same
+        # `complete()` either way and has no idea it is being logged.
+        instrumented = InstrumentedProvider(
+            adapter,
+            bus=self._bus,
+            redactor=self._redactor,
+            conversation_id=conversation.id,
+            streamed=False,
         )
 
         log.info(
@@ -88,14 +107,12 @@ class ChatService:
             history_messages=len(history),
         )
 
-        # The single call the instrumentation wrapper will wrap. Everything
-        # needed to log the call -- provider, model, conversation -- is already
-        # resolved at this point.
-        response = await adapter.complete(request)
+        # Outside any transaction. A model call can take minutes; holding a
+        # database connection and its locks open for that would exhaust the
+        # pool under trivial concurrency.
+        response = await instrumented.complete(request)
 
-        assistant_message = await self._conversations.append_message(
-            conversation.id, role=MessageRole.ASSISTANT, content=response.text
-        )
+        assistant_message = await self._record_assistant_turn(conversation.id, response.text)
 
         return ChatResult(
             conversation=conversation,
@@ -105,12 +122,36 @@ class ChatService:
             model=model_name,
         )
 
-    async def _resolve_conversation(self, conversation_id: uuid.UUID | None) -> Conversation:
-        """Continue an existing conversation, or start one.
+    async def _record_user_turn(
+        self, *, conversation_id: uuid.UUID | None, content: str
+    ) -> tuple[Conversation, Message, list[Message]]:
+        """First transaction: durably record what the user said.
 
-        A missing id means "new chat" rather than an error, so the first
-        message of a session needs no separate create call.
+        Returns the history to send upstream, read back from the database
+        rather than assembled in memory -- so a resumed conversation and a
+        fresh one take exactly the same path.
         """
-        if conversation_id is None:
-            return await self._conversations.create()
-        return await self._conversations.require(conversation_id)
+        async with self._database.session() as session:
+            repo = ConversationRepository(session)
+
+            conversation = (
+                await repo.create()
+                if conversation_id is None
+                else await repo.require(conversation_id)
+            )
+
+            user_message = await repo.append_message(
+                conversation.id, role=MessageRole.USER, content=content
+            )
+            await repo.ensure_title(conversation.id, source=content)
+
+            history = await repo.messages(conversation.id)
+
+        return conversation, user_message, history
+
+    async def _record_assistant_turn(self, conversation_id: uuid.UUID, content: str) -> Message:
+        """Second transaction: record the reply."""
+        async with self._database.session() as session:
+            return await ConversationRepository(session).append_message(
+                conversation_id, role=MessageRole.ASSISTANT, content=content
+            )

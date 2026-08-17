@@ -17,6 +17,8 @@ from app.core.config import Settings
 from app.db.repositories.conversations import ConversationRepository
 from app.db.repositories.inference_logs import InferenceLogRepository
 from app.db.session import Database
+from app.events.bus import EventBus
+from app.instrumentation.redaction import Redactor
 from app.providers.registry import ProviderRegistry
 from app.services.chat import ChatService
 
@@ -65,12 +67,34 @@ ConversationRepoDep = Annotated[ConversationRepository, Depends(get_conversation
 InferenceLogRepoDep = Annotated[InferenceLogRepository, Depends(get_inference_log_repo)]
 
 
+def get_event_bus(request: Request) -> EventBus:
+    bus: EventBus = request.app.state.event_bus
+    return bus
+
+
+def get_redactor(request: Request) -> Redactor:
+    redactor: Redactor = request.app.state.redactor
+    return redactor
+
+
 def get_chat_service(
-    conversations: ConversationRepoDep,
+    request: Request,
     registry: RegistryDep,
     settings: SettingsDep,
 ) -> ChatService:
-    return ChatService(conversations=conversations, registry=registry, settings=settings)
+    """Built per request, but from process-wide resources.
+
+    The service opens its own transactions rather than receiving a session,
+    because one chat turn spans two of them with a provider call in between --
+    see `app.services.chat`.
+    """
+    return ChatService(
+        database=get_database(request),
+        registry=registry,
+        settings=settings,
+        bus=get_event_bus(request),
+        redactor=get_redactor(request),
+    )
 
 
 ChatServiceDep = Annotated[ChatService, Depends(get_chat_service)]

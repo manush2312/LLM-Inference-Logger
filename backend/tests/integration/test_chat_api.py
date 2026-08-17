@@ -205,13 +205,48 @@ async def test_empty_message_is_rejected(api: AsyncClient) -> None:
     assert (await api.post("/chat", json={"content": ""})).status_code == 422
 
 
-async def test_provider_errors_surface_as_502_and_roll_back(api: AsyncClient) -> None:
-    """A failed model call must not strand a user message with no reply."""
+async def test_provider_error_keeps_the_user_message_and_omits_a_reply(
+    api: AsyncClient,
+) -> None:
+    """A failed model call keeps what the user typed.
+
+    This pins the two-transaction design: the user turn commits *before* the
+    provider is called, so a failure leaves a visible, retryable turn rather
+    than making the user's message vanish along with their typing. It is also
+    what lets the failure be logged at all -- the event references a
+    conversation that was genuinely committed, so the worker can write the
+    error row without hitting a foreign-key violation against a conversation
+    that never existed.
+    """
     response = await api.post("/chat", json={"content": "trigger failure", "model": "mock-error"})
 
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "provider_error"
-    assert (await api.get("/conversations")).json()["total"] == 0
+
+    listing = (await api.get("/conversations")).json()
+    assert listing["total"] == 1
+
+    conversation = (await api.get(f"/conversations/{listing['items'][0]['id']}")).json()
+    assert [m["role"] for m in conversation["messages"]] == ["user"]
+    assert conversation["messages"][0]["content"] == "trigger failure"
+
+
+async def test_a_failed_turn_can_be_retried_in_place(api: AsyncClient) -> None:
+    """The retry appends to the same conversation rather than forking one."""
+    await api.post("/chat", json={"content": "trigger failure", "model": "mock-error"})
+    conversation_id = (await api.get("/conversations")).json()["items"][0]["id"]
+
+    retry = await api.post(
+        "/chat",
+        json={
+            "conversation_id": conversation_id,
+            "content": "try again",
+            "model": "mock-instant",
+        },
+    )
+
+    assert retry.status_code == 200
+    assert (await api.get("/conversations")).json()["total"] == 1
 
 
 # --- Provider discovery ----------------------------------------------------

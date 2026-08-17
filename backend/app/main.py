@@ -20,6 +20,8 @@ from app.core.config import Settings, get_settings
 from app.core.errors import AppError
 from app.core.logging import configure_logging, get_logger
 from app.db.session import Database
+from app.events.factory import create_event_bus
+from app.instrumentation.redaction import Redactor
 from app.providers.registry import ProviderRegistry
 
 log = get_logger(__name__)
@@ -39,12 +41,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Built once: constructing vendor SDK clients per request would create a
     # new connection pool on every call.
     app.state.registry = ProviderRegistry.from_settings(settings)
+    app.state.event_bus = create_event_bus(settings)
+    app.state.redactor = Redactor(
+        max_chars=settings.preview_max_chars, enabled=settings.redaction_enabled
+    )
 
     try:
         yield
     finally:
         # Release in reverse acquisition order, and in a `finally` so a crash
         # during startup of a later resource still closes the earlier ones.
+        await app.state.event_bus.close()
         await app.state.database.dispose()
         log.info("shutdown")
 
