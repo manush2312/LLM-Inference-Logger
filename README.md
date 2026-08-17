@@ -21,6 +21,44 @@ load-bearing](#why-the-mock-provider-is-load-bearing).
 
 ---
 
+## Live demo
+
+**<https://3-109-10-125.sslip.io>**
+
+Running on a single `t3.medium` EC2 instance under **k3s** — self-hosted
+Kubernetes, control plane included, from the manifests in
+[`infra/k8s-aws/`](infra/k8s-aws/). No login; the default provider is the mock one,
+so the site costs nothing to visit.
+
+Four things worth doing, and what each is meant to show:
+
+| Try this | What it demonstrates |
+|---|---|
+| Send a message with **ollama** selected | Real token-by-token streaming, ~175 ms between chunks. A 1B model on the same box, reached through the same adapter as the cloud providers |
+| Switch to **groq** and resend | The opposite extreme: ~430 chunks in under half a second. Streaming so fast it looks instant |
+| Press **Stop** mid-reply (try `mock-slow`) | Cancellation. Partial output is kept and the call is logged as `cancelled`, not as an error |
+| Open **Metrics** | Latency percentiles, throughput by outcome, per-provider breakdown, and the health of the ingestion pipeline itself |
+
+Three things that look like bugs and are not:
+
+- **The dashboard lags 5–25 seconds behind the chat.** By design. Logging is
+  published to Redis and consumed by a separate worker, so the request path never
+  waits on it. The dashboard's `lag` panel reports exactly how far behind it is.
+- **Gemini may return a rate-limit error.** Its free-tier quota is easy to exhaust.
+  That path is worth seeing: the 429 is classified as `RateLimitError`, delivered
+  in-band over SSE so the browser gets a real message rather than a dead
+  connection, and recorded in the dashboard's error panel.
+- **Groq's replies appear all at once.** It generates around 900 tokens/second;
+  a browser cannot paint 429 updates in 470 ms. Pick `ollama` to watch streaming
+  actually happen.
+
+The one number the dashboard makes visible that is hard to see any other way:
+**time to first token differs by more than an order of magnitude between
+providers**, and a warm local 1B model beats a cloud API on it (~600 ms vs
+~1000 ms) because there is no network round trip.
+
+---
+
 ## Contents
 
 - [What it does](#what-it-does)
