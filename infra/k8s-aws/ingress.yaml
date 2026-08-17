@@ -1,0 +1,29 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llm-logger
+  namespace: llm-logger
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    traefik.ingress.kubernetes.io/router.middlewares: >-
+      llm-logger-ratelimit@kubernetescrd,llm-logger-sse-timeouts@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - 3-109-10-125.sslip.io
+      secretName: llm-logger-tls
+  rules:
+    - host: 3-109-10-125.sslip.io
+      http:
+        paths:
+          # Everything through the frontend, which proxies the API paths onward.
+          # One origin, one place that knows the routing.
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+

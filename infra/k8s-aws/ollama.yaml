@@ -1,0 +1,142 @@
+# Ollama: a model running on our own node, reached through the same
+# OpenAI-compatible adapter as Groq and Gemini.
+#
+# This is the one provider with no per-token cost and no external dependency,
+# which is why it is worth hosting: it makes "multi-provider" mean something
+# beyond "several vendors' APIs".
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: ollama-models
+  namespace: llm-logger
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      # llama3.2:1b is ~1.3 GB. 8 GiB leaves room to try a second model without
+      # resizing, and the local-path provisioner is backed by the node's 28 GB
+      # disk so this is not reserved up front.
+      storage: 8Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: llm-logger
+spec:
+  selector:
+    app: ollama
+  ports:
+    - name: http
+      port: 11434
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ollama
+  namespace: llm-logger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ollama
+  # Recreate, not RollingUpdate: the PVC is ReadWriteOnce, so a second pod would
+  # block forever waiting for a volume the outgoing pod still holds.
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ollama
+    spec:
+      containers:
+        - name: ollama
+          image: ollama/ollama:latest
+          ports:
+            - name: http
+              containerPort: 11434
+          env:
+            # Bind all interfaces; the default localhost would make the Service
+            # unable to reach it.
+            - name: OLLAMA_HOST
+              value: "0.0.0.0"
+            # The memory decision on a 4 GB node. k3s takes ~1.2 GB and the rest
+            # of the stack ~1 GB, leaving under 1.5 GB -- less than this model
+            # needs while resident. Unloading after 30s idle means the 2 GB spike
+            # exists only while a reply is actually being generated, and the
+            # node's swap absorbs it. Without this, Ollama holds the model
+            # forever and something eventually gets OOM-killed.
+            - name: OLLAMA_KEEP_ALIVE
+              value: "30s"
+            # One model, one request at a time. Both default higher, and either
+            # default multiplies the resident footprint on a box that has no room
+            # for the multiplication.
+            - name: OLLAMA_MAX_LOADED_MODELS
+              value: "1"
+            - name: OLLAMA_NUM_PARALLEL
+              value: "1"
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+          readinessProbe:
+            httpGet: { path: /api/tags, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/tags, port: http }
+            # Generous: a cold model load blocks the HTTP handler, and a liveness
+            # probe that fires during one would restart the pod mid-download.
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 6
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { memory: 2560Mi }
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: ollama-models
+---
+# Pulls the model once, as a Job rather than an initContainer or a postStart
+# hook. An initContainer cannot reach a server that has not started yet, and a
+# postStart hook that downloads 1.3 GB delays the pod becoming ready and is
+# killed if it takes too long. A Job is separately observable -- `kubectl logs
+# job/ollama-pull` shows download progress -- and retries on its own.
+#
+# The pull is idempotent: on restart the model is already on the PVC and this
+# completes immediately, which is the entire reason the volume exists.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: ollama-pull
+  namespace: llm-logger
+spec:
+  backoffLimit: 30
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: pull
+          image: ollama/ollama:latest
+          env:
+            # The CLI is also a client: pointed at the Service, `ollama pull`
+            # instructs the running server to fetch the model onto its own volume.
+            - name: OLLAMA_HOST
+              value: "http://ollama:11434"
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              echo "waiting for ollama to accept connections..."
+              until ollama list >/dev/null 2>&1; do sleep 3; done
+              echo "pulling ${OLLAMA_MODEL}"
+              ollama pull "${OLLAMA_MODEL}"
+              ollama list
+          envFrom:
+            - configMapRef:
+                name: app-config
+          resources:
+            requests: { cpu: 50m, memory: 64Mi }
+            limits: { memory: 256Mi }

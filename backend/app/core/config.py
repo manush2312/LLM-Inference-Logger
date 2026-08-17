@@ -11,6 +11,7 @@ from enum import StrEnum
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
 from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -66,6 +67,13 @@ class Settings(BaseSettings):
     # --- Redis -------------------------------------------------------------
     redis_host: str = "localhost"
     redis_port: int = 6379
+
+    #: Unset for local work, where Redis is only reachable inside the compose
+    #: network. Required in any deployment where the host has a public address:
+    #: an unauthenticated Redis on a routable IP is one of the most reliably
+    #: exploited things on the internet, and network isolation alone is a single
+    #: firewall mistake away from being the only thing protecting it.
+    redis_password: str | None = None
 
     # --- Event bus ---------------------------------------------------------
     event_bus_backend: EventBusBackend = EventBusBackend.REDIS
@@ -146,7 +154,12 @@ class Settings(BaseSettings):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def redis_url(self) -> str:
-        return f"redis://{self.redis_host}:{self.redis_port}/0"
+        # quote() the password rather than interpolating it raw: a generated
+        # secret routinely contains '@', '/' or ':', any of which silently
+        # reshapes the URL and produces a connection failure that looks like a
+        # wrong host rather than a quoting bug.
+        auth = f":{quote(self.redis_password, safe='')}@" if self.redis_password else ""
+        return f"redis://{auth}{self.redis_host}:{self.redis_port}/0"
 
     @property
     def event_publish_timeout_s(self) -> float:

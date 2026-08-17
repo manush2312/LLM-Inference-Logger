@@ -1,0 +1,65 @@
+# Production overlay: one t3.medium EC2 node running k3s.
+#
+# The base (../../) stays exactly as verified on kind. Everything specific to
+# this deployment lives here, so the two never have to be reconciled by hand:
+#
+#   - images pulled from GHCR instead of side-loaded with `kind load`
+#   - Traefik ingress with real TLS, replacing the nginx one
+#   - Ollama, which does not exist in the base at all
+#   - one replica of each service, sized for 4 GB
+#
+# Lives beside the base rather than inside it: kustomize refuses a base that is
+# an ancestor of its own overlay ("cycle detected"). The conventional fix is to
+# restructure into base/ + overlays/, but that would invalidate every existing
+# reference to infra/k8s -- the Makefile, the README, the kind workflow -- for no
+# gain over sitting one directory across.
+#
+# Apply with:  kubectl apply -k infra/k8s-aws
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: llm-logger
+
+resources:
+  - ../k8s
+  - ollama.yaml
+  - middleware.yaml
+  - issuer.yaml
+
+# The base's nginx Ingress is dropped entirely and replaced by the Traefik one --
+# its annotations are nginx-specific and inert here. Patching would leave dead
+# configuration behind that reads as active.
+patches:
+  - path: patches.yaml
+  - path: secret-delete.yaml
+  - path: ingress.yaml
+  - target:
+      kind: Ingress
+      name: llm-logger
+    patch: |
+      - op: remove
+        path: /metadata/annotations/nginx.ingress.kubernetes.io~1proxy-buffering
+      - op: remove
+        path: /metadata/annotations/nginx.ingress.kubernetes.io~1proxy-read-timeout
+      - op: remove
+        path: /metadata/annotations/nginx.ingress.kubernetes.io~1proxy-send-timeout
+
+# Real registry paths. The tag is `main` -- the workflow pushes both a
+# branch tag and the commit SHA, and pinning the SHA is the honest way to deploy
+# a known build, but `main` keeps a first deploy from needing a lookup.
+images:
+  - name: llm-inference-logger-backend
+    newName: ghcr.io/manush2312/llm-inference-logger-backend
+    newTag: main
+  - name: llm-inference-logger-frontend
+    newName: ghcr.io/manush2312/llm-inference-logger-frontend
+    newTag: main
+
+# NOTE: the base's app-config is a plain ConfigMap resource, not a generated one,
+# so `configMapGenerator` with `behavior: merge` cannot target it -- kustomize
+# errors with "does not exist; cannot merge or replace". It is patched in
+# patches.yaml instead.
+#
+# Consequence worth knowing: a patched ConfigMap gets no content-hash suffix, so
+# editing a value does not roll the pods. After changing config here, run
+#   kubectl -n llm-logger rollout restart deploy/backend deploy/worker

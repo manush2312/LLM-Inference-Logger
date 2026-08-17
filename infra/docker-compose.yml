@@ -11,6 +11,14 @@
 # otherwise both try to migrate, and concurrent Alembic runs on one database is
 # a race worth designing out rather than hoping about.
 
+# Every published port binds to 127.0.0.1 rather than 0.0.0.0. On a laptop this
+# is invisible -- localhost:5432 still works -- but "0.0.0.0" on a host with a
+# public address means Postgres and Redis are on the internet, and an
+# unauthenticated Redis there is found and exploited within hours. Loopback makes
+# the safe thing the default, so a stray `docker compose up` on a server cannot
+# expose a datastore. Note that an override file *cannot* fix this: compose
+# concatenates `ports` rather than replacing them, so it has to be correct here.
+
 name: llm-inference-logger
 
 x-app-env: &app-env
@@ -26,6 +34,9 @@ x-app-env: &app-env
   POSTGRES_PORT: 5432
   REDIS_HOST: redis
   REDIS_PORT: 6379
+  # Empty locally: Redis is only reachable inside this network. Set in
+  # production, where the host has a public address.
+  REDIS_PASSWORD: ${REDIS_PASSWORD:-}
   EVENT_BUS_BACKEND: redis
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -59,7 +70,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-llm}
       POSTGRES_DB: ${POSTGRES_DB:-llm_logger}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -76,13 +87,17 @@ services:
     restart: unless-stopped
     # AOF on: the stream is the buffer that protects ingestion from a Postgres
     # outage, so it should survive a Redis restart too.
-    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    command: >
+      sh -c 'exec redis-server --appendonly yes --appendfsync everysec
+      ${REDIS_PASSWORD:+--requirepass "$$REDIS_PASSWORD"}'
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-}
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ${REDIS_PASSWORD:+-a \"$$REDIS_PASSWORD\"} ping"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -103,7 +118,7 @@ services:
     command: ["llm-api"]
     restart: unless-stopped
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "127.0.0.1:${BACKEND_PORT:-8000}:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -142,7 +157,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "${FRONTEND_PORT:-5173}:8080"
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:8080"
     depends_on:
       - backend
 

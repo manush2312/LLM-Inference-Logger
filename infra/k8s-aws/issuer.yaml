@@ -1,0 +1,47 @@
+# Let's Encrypt via cert-manager, using the HTTP-01 challenge through Traefik.
+#
+# HTTP-01 rather than DNS-01 because it needs nothing but port 80 reachable,
+# which the AWS security group already allows -- DNS-01 would mean giving
+# cert-manager API credentials for the DNS provider, and with an sslip.io
+# hostname there is no zone to hold a TXT record anyway.
+#
+# NOTE: a ClusterIssuer is cluster-scoped, so it deliberately has no namespace.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    # Expiry notices go here. Not used for anything else.
+    email: manush.darji23@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-prod-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik
+---
+# The staging issuer exists because production Let's Encrypt allows only 5
+# duplicate-certificate failures per host per week, and a misconfigured Ingress
+# burns through that quickly -- at which point you are locked out of issuing for
+# that hostname until the window rolls, with nothing to do but wait.
+#
+# Staging has effectively no limits and issues an untrusted certificate: the
+# browser warns, but "warning about an untrusted cert" proves the entire chain
+# works. Switch the Ingress annotation to this if issuance fails, get it working,
+# then switch back.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: manush.darji23@gmail.com
+    privateKeySecretRef:
+      name: letsencrypt-staging-account-key
+    solvers:
+      - http01:
+          ingress:
+            ingressClassName: traefik

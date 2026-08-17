@@ -1,0 +1,37 @@
+# Traefik-based ingress, replacing the base manifest's nginx one.
+#
+# This is a full replacement rather than a patch because the difference is not
+# cosmetic: the base carries `nginx.ingress.kubernetes.io/proxy-buffering: "off"`,
+# which is load-bearing there -- with buffering on, nginx holds the whole SSE
+# response and delivers it in one lump, so streaming silently stops streaming.
+# Those annotations are inert under Traefik. Traefik v3 does not buffer responses
+# by default, so the behaviour is correct here without an equivalent, but that is
+# a property of Traefik rather than something this manifest configures, and it is
+# worth knowing which of the two is true when streaming next looks wrong.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ratelimit
+  namespace: llm-logger
+spec:
+  rateLimit:
+    # Per client IP. The site is deliberately open -- no password -- so this is
+    # the only thing standing between a scraper and either the free-tier provider
+    # quota or Ollama pegging both vCPUs and making the site unusable for a real
+    # visitor. Generous enough that a human clicking around never notices.
+    average: 20
+    period: 1m
+    burst: 10
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: sse-timeouts
+  namespace: llm-logger
+spec:
+  # A generation can legitimately run for minutes, and Ollama on 2 shared vCPUs
+  # is the slow case. Traefik's default response timeout would cut a long reply
+  # off mid-sentence, which reads as a bug in the app.
+  forwardingTimeouts:
+    readTimeout: 600s
+    idleConnTimeout: 600s

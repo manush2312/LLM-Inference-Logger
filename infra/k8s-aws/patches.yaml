@@ -1,0 +1,128 @@
+# Fitting the base manifests onto one 4 GB node.
+#
+# The base is sized for a laptop with room to spare and runs 2 replicas of each
+# app service to exercise the horizontal path. Here the whole budget is:
+#
+#   3.7 GB total - 1.2 GB (k3s itself) = ~2.5 GB for everything below,
+#   of which Ollama wants up to 2.5 GB while a model is resident.
+#
+# So: one replica each, and requests small enough that the scheduler can actually
+# place them all. Requests are what scheduling uses; limits are the ceiling. They
+# are deliberately not equal -- summed requests must fit the node, while limits
+# may oversubscribe, because these services do not all peak together and the
+# node has 4 GB of swap for the moments when two of them do.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: llm-logger
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: backend
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: llm-logger
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: worker
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 384Mi }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: llm-logger
+spec:
+  replicas: 1
+  template:
+    spec:
+      containers:
+        - name: frontend
+          resources:
+            requests: { cpu: 10m, memory: 24Mi }
+            limits: { memory: 96Mi }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: llm-logger
+spec:
+  template:
+    spec:
+      containers:
+        - name: postgres
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 640Mi }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: llm-logger
+spec:
+  template:
+    spec:
+      containers:
+        - name: redis
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits: { memory: 256Mi }
+---
+# minReplicas drops to 1 to match the Deployments above. Left able to scale up:
+# metrics-server is present on k3s, so unlike the kind setup these HPAs can read
+# CPU and will actually act. maxReplicas is lowered because scaling to 10 on a
+# 2 vCPU node would only add memory pressure -- the ceiling should be something
+# the node can honour.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend
+  namespace: llm-logger
+spec:
+  minReplicas: 1
+  maxReplicas: 3
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  namespace: llm-logger
+spec:
+  minReplicas: 1
+  maxReplicas: 3
+---
+# Ollama is reachable in-cluster, so the base's host.docker.internal default (which
+# means "the laptop running Docker Desktop") is replaced with the Service. OLLAMA_MODEL
+# is read by the pull Job as well as the API, so the model is named in one place.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: llm-logger
+data:
+  OLLAMA_ENABLED: "true"
+  OLLAMA_BASE_URL: "http://ollama:11434/v1"
+  OLLAMA_MODEL: "llama3.2:1b"
+  DEFAULT_OLLAMA_MODEL: "llama3.2:1b"
+  # Deliberately open: the landing experience costs nothing and needs no
+  # credentials. Groq and Gemini stay selectable in the UI -- both keys are
+  # free-tier with no card attached, so an abusive visitor can exhaust a quota but
+  # cannot generate a bill.
+  DEFAULT_PROVIDER: "mock"
