@@ -5,8 +5,7 @@ metadata:
   namespace: llm-logger
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt-prod
-    traefik.ingress.kubernetes.io/router.middlewares: >-
-      llm-logger-ratelimit@kubernetescrd,llm-logger-sse-timeouts@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: llm-logger-ratelimit@kubernetescrd
 spec:
   ingressClassName: traefik
   tls:

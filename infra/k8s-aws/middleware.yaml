@@ -22,16 +22,18 @@ spec:
     average: 20
     period: 1m
     burst: 10
----
-apiVersion: traefik.io/v1alpha1
-kind: Middleware
-metadata:
-  name: sse-timeouts
-  namespace: llm-logger
-spec:
-  # A generation can legitimately run for minutes, and Ollama on 2 shared vCPUs
-  # is the slow case. Traefik's default response timeout would cut a long reply
-  # off mid-sentence, which reads as a bug in the app.
-  forwardingTimeouts:
-    readTimeout: 600s
-    idleConnTimeout: 600s
+
+# There is deliberately no timeout middleware here.
+#
+# A `Middleware` with `spec.forwardingTimeouts` was the first attempt and is
+# invalid -- the API server rejects it with `unknown field
+# "spec.forwardingTimeouts"`, because that field belongs to the ServersTransport
+# CRD, not Middleware. Worse than merely failing: the Ingress still referenced the
+# middleware by name, so Traefik had a route pointing at a middleware that did not
+# exist and refused to serve it.
+#
+# It turned out to be unnecessary. The fear was Traefik cutting off a long
+# generation the way nginx's 60s default does, but Traefik v3 defaults its
+# entryPoint readTimeout and writeTimeout to 0, meaning no limit. So streams of any
+# duration survive without configuration. If a limit is ever introduced, the right
+# place is the entryPoint or a ServersTransport -- not a Middleware.
