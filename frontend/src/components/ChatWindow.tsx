@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { ApiError } from "../api/client";
 import { useConversation, useProviders } from "../hooks/useChat";
 import { useStreamingChat } from "../hooks/useStreamingChat";
 import { Composer } from "./Composer";
@@ -12,7 +13,7 @@ export function ChatWindow() {
   const { conversationId } = useParams();
   const navigate = useNavigate();
 
-  const { data: conversation, isLoading } = useConversation(conversationId);
+  const { data: conversation, isLoading, error: loadError } = useConversation(conversationId);
   const { data: providers } = useProviders();
   const stream = useStreamingChat();
 
@@ -41,6 +42,15 @@ export function ChatWindow() {
     stream.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]);
+
+  // A URL pointing at a conversation that no longer exists -- an open tab after
+  // the row was deleted -- would otherwise leave the user stuck: every send
+  // 404s against an id they cannot see or change. Drop back to a new chat.
+  useEffect(() => {
+    if (loadError instanceof ApiError && loadError.code === "not_found") {
+      navigate("/", { replace: true });
+    }
+  }, [loadError, navigate]);
 
   function parseSelection(): { provider?: string; model?: string } {
     if (!selection) return {};

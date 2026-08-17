@@ -327,6 +327,21 @@ Smaller, but the same theme — each was invisible until something ran:
 - **`capabilities: drop: ["ALL"]` broke nginx**, whose entrypoint needs
   `CAP_CHOWN`. Fixed by switching to the unprivileged image rather than
   loosening the security context to suit the base image.
+- **A stale browser tab produced an unexplained `network_error`.** A page left
+  open on `/c/<id>` whose conversation had since been deleted got a dead socket
+  and no message. The cause was structural: validation ran *inside* the response
+  generator, so `NotFoundError` was raised after `StreamingResponse` had already
+  sent its 200 headers. Starlette then hit `RuntimeError: Caught handled
+  exception, but response already started`, the connection was torn down
+  mid-flight, and nginx logged `upstream prematurely closed connection` — while
+  the browser had nothing to report but a failed fetch.
+
+  Everything knowable up front now runs *before* the response starts, so an
+  unknown conversation is a 404 and an unsupported model a 400. A catch inside
+  the generator is the second layer, because an exception escaping after the
+  first byte can no longer become a status code at all. And the UI redirects
+  off a dead conversation URL rather than leaving the user unable to send
+  anything.
 - **The model picker silently routed to the wrong provider.** Selecting
   `llama3.2:1b` returned a *mock* reply. Two bugs stacked: the dropdown sent
   only the model name, so the backend fell back to the default provider — and

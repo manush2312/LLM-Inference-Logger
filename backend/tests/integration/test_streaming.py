@@ -288,3 +288,52 @@ def _field(data: str, key: str) -> str:
 
     value: str = json.loads(data)[key]
     return value
+
+
+# --- Pre-stream failures must still be HTTP failures -----------------------
+
+
+async def test_unknown_conversation_is_a_404_not_a_broken_stream(api: AsyncClient) -> None:
+    """Found in the browser, not in a test.
+
+    A page left open on a conversation that had since been deleted produced an
+    unexplained `network_error`. The cause: validation ran inside the response
+    generator, so `NotFoundError` was raised *after* StreamingResponse had
+    already sent its 200 headers. Starlette then hit "Caught handled exception,
+    but response already started", tore the connection down mid-flight, and the
+    browser had nothing to report but a dead socket.
+
+    Validation now runs before the response starts, so this is an ordinary 404.
+    """
+    missing = "00000000-0000-0000-0000-000000000000"
+
+    response = await api.post(
+        "/chat/stream",
+        json={"conversation_id": missing, "content": "hi", "model": "mock-instant"},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_unsupported_model_is_a_400_before_streaming(api: AsyncClient) -> None:
+    """Same principle: knowable up front, so it gets a real status code."""
+    response = await api.post(
+        "/chat/stream", json={"content": "hi", "provider": "mock", "model": "llama3.2:1b"}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "model_not_supported"
+
+
+async def test_a_started_stream_never_raises_out_of_the_generator(api: AsyncClient) -> None:
+    """Once bytes are flowing, every failure must be an in-band error frame.
+
+    `mock-error` fails mid-generation; the response must still be a well-formed
+    200 SSE stream that ends with an `error` event, never a truncated body.
+    """
+    response = await api.post("/chat/stream", json={"content": "boom", "model": "mock-error"})
+
+    assert response.status_code == 200
+    names = [name for name, _ in parse_sse(response.text)]
+    assert names[-1] == "error", f"stream did not terminate cleanly: {names}"

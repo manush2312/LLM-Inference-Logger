@@ -225,6 +225,34 @@ class StreamingChatService(ChatService):
     transcript and a loggable conversation id.
     """
 
+    async def prepare(
+        self,
+        *,
+        conversation_id: uuid.UUID | None = None,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> tuple[str, str]:
+        """Validate everything knowable *before* the response starts.
+
+        Called by the endpoint ahead of `StreamingResponse`, because anything
+        that raises once headers are on the wire cannot become an HTTP status
+        any more. Starlette's handler then hits "Caught handled exception, but
+        response already started", the connection is torn down mid-flight, and
+        the browser reports a bare network error with no explanation --
+        observed exactly that for a request naming a deleted conversation.
+
+        So the checks that can be made up front are made up front, and get real
+        status codes: 400 for an unsupported model, 404 for a conversation that
+        does not exist.
+        """
+        provider_name, model_name = self._registry.resolve_model(provider, model)
+
+        if conversation_id is not None:
+            async with self._database.session() as session:
+                await ConversationRepository(session).require(conversation_id)
+
+        return provider_name, model_name
+
     async def stream(
         self,
         *,
@@ -236,9 +264,17 @@ class StreamingChatService(ChatService):
         provider_name, model_name = self._registry.resolve_model(provider, model)
         adapter = self._registry.get(provider_name)
 
-        conversation, _user_message, history = await self._record_user_turn(
-            conversation_id=conversation_id, content=content
-        )
+        try:
+            conversation, _user_message, history = await self._record_user_turn(
+                conversation_id=conversation_id, content=content
+            )
+        except AppError as exc:
+            # Belt and braces. `prepare()` should have caught this already, but
+            # an exception escaping after the headers are sent produces an
+            # unexplained dropped connection rather than any kind of error --
+            # so this path must never be able to raise, only report.
+            yield StreamFailed(code=exc.code, message=exc.message)
+            return
 
         yield StreamStarted(
             conversation_id=conversation.id, provider=provider_name, model=model_name

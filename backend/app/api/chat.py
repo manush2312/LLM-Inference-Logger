@@ -88,10 +88,16 @@ async def chat_stream(
 ) -> StreamingResponse:
     """Stream a reply as Server-Sent Events.
 
-    Note the status code is always 200: by the time anything can fail, the
-    headers are already on the wire. Failures arrive as an `error` event
-    instead -- see `StreamFailed`.
+    Pre-stream failures still get real status codes -- an unsupported model is
+    a 400, an unknown conversation a 404 -- because `prepare()` runs before the
+    response starts. Only failures that happen *after* the first byte arrive
+    in-band as an `error` event, since by then the status line is committed.
     """
+    # Deliberately outside the generator: raising here still becomes an HTTP
+    # error response. Raising inside it cannot.
+    await service.prepare(
+        conversation_id=body.conversation_id, provider=body.provider, model=body.model
+    )
 
     async def frames() -> AsyncIterator[str]:
         async for event in service.stream(
